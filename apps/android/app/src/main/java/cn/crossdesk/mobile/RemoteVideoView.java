@@ -34,7 +34,6 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
 
     private static final long LONG_PRESS_TIMEOUT_MS = 430L;
     private static final long DOUBLE_TAP_WINDOW_MS = 280L;
-    private static final long TAP_DRAG_HOLD_MS = 180L;
     private static final long TWO_FINGER_TAP_MAX_TOTAL_MS = 280L;
     private static final long TWO_FINGER_TAP_MAX_PAIR_MS = 260L;
     private static final long DIRECT_CURSOR_HIDE_DELAY_MS = 1200L;
@@ -100,7 +99,6 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
     private ValueAnimator cursorFadeAnimator;
 
     private final Runnable longPressRunnable = this::handleLongPressTimeout;
-    private final Runnable tapDragHoldRunnable = this::handleTapDragHoldTimeout;
     private final Runnable autoHideCursorRunnable = this::fadeOutDirectCursor;
 
     RemoteVideoView(Context context, NativeSession session) {
@@ -118,6 +116,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
 
         mouseInput = new RemoteMouseInput(this::sendMouse);
         mouseInput.relativeMotion = (dx, dy, dtMs) -> moveRelativeBallistic(dx, dy, dtMs, false);
+        mouseInput.directPixelMotion = this::moveDirectScreenDelta;
 
         setBackgroundColor(Color.BLACK);
         video = new SurfaceView(context);
@@ -153,16 +152,6 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
         pulseCursor();
         click(3, 4);
         onPointerActivity();
-    }
-
-    private void handleTapDragHoldTimeout() {
-        if (viewOnly || !relative || twoFinger || dragging || !tapDragCandidate || suppressPointerGesture()) {
-            return;
-        }
-        mouseInput.gestureLeft(true);
-        dragging = true;
-        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        pulseCursor();
     }
 
     void reloadMousePreferences(SharedPreferences prefs) {
@@ -239,7 +228,6 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
 
     private void cancelTimers() {
         handler.removeCallbacks(longPressRunnable);
-        handler.removeCallbacks(tapDragHoldRunnable);
     }
 
     private boolean suppressPointerGesture() {
@@ -393,13 +381,30 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
         post(this::fit);
     }
 
+    private float smoothedSpeedDpPerMs;
+
+    private void moveDirectScreenDelta(float dxPx, float dyPx) {
+        if (pictureInPicture || viewport.width() <= 0 || viewport.height() <= 0) return;
+        if (!Float.isFinite(dxPx) || !Float.isFinite(dyPx) || (dxPx == 0f && dyPx == 0f)) return;
+        float nextX = Math.max(0f, Math.min(1f, x + dxPx / viewport.width()));
+        float nextY = Math.max(0f, Math.min(1f, y + dyPx / viewport.height()));
+        viewport.panForPointer(nextX, nextY, y, dyPx, 18f * density);
+        applyViewport();
+        mouseInput.move(nextX, nextY);
+        notifyCursorPosition(false);
+        onPointerActivity();
+    }
+
     private void moveRelativeBallistic(float rawDx, float rawDy, long dtMs, boolean fromScreenTouch) {
         if (pictureInPicture || viewport.width() <= 0 || viewport.height() <= 0) return;
         if (!Float.isFinite(rawDx) || !Float.isFinite(rawDy) || (rawDx == 0f && rawDy == 0f)) return;
-        float dx = PointerBallistics.scaleDeltaX(
-                rawDx, rawDy, density, dtMs, pointerSensitivity, pointerAcceleration);
-        float dy = PointerBallistics.scaleDeltaY(
-                rawDx, rawDy, density, dtMs, pointerSensitivity, pointerAcceleration);
+        float safeDensity = density > 0f ? density : 1f;
+        float distDp = (float) Math.hypot(rawDx, rawDy) / safeDensity;
+        smoothedSpeedDpPerMs = PointerBallistics.smoothSpeedDpPerMs(smoothedSpeedDpPerMs, distDp, dtMs);
+        float mult = PointerBallistics.effectiveMultiplierForSpeed(
+                smoothedSpeedDpPerMs, pointerSensitivity, pointerAcceleration);
+        float dx = rawDx * mult;
+        float dy = rawDy * mult;
         if (dx == 0f && dy == 0f) return;
         float nextX = Math.max(0f, Math.min(1f, x + dx / viewport.width()));
         float nextY = Math.max(0f, Math.min(1f, y + dy / viewport.height()));
@@ -589,6 +594,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
             downX = lastX = e.getX();
             downY = lastY = e.getY();
             downTimeMs = lastMoveTimeMs = e.getEventTime();
+            smoothedSpeedDpPerMs = 0f;
             relativeMoveUnlocked = false;
             directTouchValid = viewport.contains(downX, downY);
             onPointerActivity();
@@ -614,11 +620,11 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
                     }
                 } else if (usesRelativeMotion(e)) {
                     // Trackpad mode: NEVER move on ACTION_DOWN so thumb taps stay pixel-accurate.
+                    // Engage tap-and-drag only if the second touch slides past tapDragSlopPx, so double-taps stay crisp.
                     if (lastSingleTapUpTimeMs > 0L
                             && (downTimeMs - lastSingleTapUpTimeMs) <= DOUBLE_TAP_WINDOW_MS
                             && Math.hypot(downX - lastSingleTapX, downY - lastSingleTapY) <= doubleTapSlopPx) {
                         tapDragCandidate = true;
-                        handler.postDelayed(tapDragHoldRunnable, TAP_DRAG_HOLD_MS);
                     } else {
                         handler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS);
                     }
@@ -696,7 +702,6 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
 
             if (usesRelativeMotion(e)) {
                 if (tapDragCandidate && !dragging && !suppressPointerGesture() && distFromDown >= tapDragSlopPx) {
-                    handler.removeCallbacks(tapDragHoldRunnable);
                     mouseInput.gestureLeft(true);
                     dragging = true;
                     pulseCursor();

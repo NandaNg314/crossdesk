@@ -105,31 +105,37 @@ public class ControllerTest {
     }
 
     @Test public void pointerBallisticsAdaptsPrecisionAndFlickWithSafeDtClamping() {
-        assertEquals(0.40f, PointerBallistics.clampSensitivity(0.10f), 0.0001f);
-        assertEquals(2.50f, PointerBallistics.clampSensitivity(9.00f), 0.0001f);
+        assertEquals(0.25f, PointerBallistics.clampSensitivity(0.10f), 0.0001f);
+        assertEquals(2.00f, PointerBallistics.clampSensitivity(9.00f), 0.0001f);
         assertEquals(PointerBallistics.DEFAULT_SENSITIVITY, PointerBallistics.clampSensitivity(Float.NaN), 0.0001f);
 
-        assertEquals(4f, PointerBallistics.clampDtMs(1L), 0.0001f);
+        assertEquals(8f, PointerBallistics.clampDtMs(1L), 0.0001f);
         assertEquals(50f, PointerBallistics.clampDtMs(400L), 0.0001f);
         assertEquals(16f, PointerBallistics.clampDtMs(0L), 0.0001f);
 
-        // Slow precision crawl (< 0.18 dp/ms) stays in [0.85, 0.96]
+        // Slow precision crawl (< 0.30 dp/ms) stays in [0.78, 0.92]
         float slowGain = PointerBallistics.accelerationGain(1.2f, 16L); // 0.075 dp/ms
-        assertTrue("Slow finger speed should retain sub-1.0 precision gain", slowGain >= 0.85f && slowGain <= 0.96f);
+        assertTrue("Slow finger speed should retain damped sub-1.0 precision gain", slowGain >= 0.78f && slowGain <= 0.92f);
 
-        // Fast flick (> 1.40 dp/ms) ramps smoothly up to 2.20x cap
-        float midGain = PointerBallistics.accelerationGain(10f, 16L); // 0.625 dp/ms
-        float fastGain = PointerBallistics.accelerationGain(30f, 16L); // 1.875 dp/ms -> 2.20x
+        // Fast flick (> 1.90 dp/ms) ramps smoothly up to 1.65x cap (net ~0.92x at 100% sensitivity)
+        float midGain = PointerBallistics.accelerationGain(12f, 16L); // 0.75 dp/ms
+        float fastGain = PointerBallistics.accelerationGain(36f, 16L); // 2.25 dp/ms -> 1.65x
         assertTrue(midGain > slowGain && midGain < fastGain);
-        assertEquals(2.20f, fastGain, 0.0001f);
+        assertEquals(1.65f, fastGain, 0.0001f);
+
+        // EMA velocity smoothing prevents single-frame 144Hz bursts from spiking speed
+        float smoothed = PointerBallistics.smoothSpeedDpPerMs(0.20f, 16f, 8L); // instant=2.0, prev=0.2
+        assertTrue("EMA should damp abrupt 1-frame spikes", smoothed < 0.85f);
 
         // Dropped frame (dt = 250ms clamped to 50ms) never exceeds max cap
-        float stalledGain = PointerBallistics.accelerationGain(100f, 250L);
-        assertTrue(stalledGain <= 2.20f);
+        float stalledGain = PointerBallistics.accelerationGain(120f, 250L);
+        assertTrue(stalledGain <= 1.65f);
 
-        // Acceleration OFF uses exact linear sensitivity multiplier
-        assertEquals(15f, PointerBallistics.scaleDeltaX(10f, 0f, 3f, 16L, 1.50f, false), 0.0001f);
-        assertEquals(-9f, PointerBallistics.scaleDeltaY(0f, -6f, 3f, 16L, 1.50f, false), 0.0001f);
+        // Acceleration OFF uses exact linear TRACKPAD_BASE_RATIO * sensitivity multiplier
+        float expectedDx = 10f * PointerBallistics.TRACKPAD_BASE_RATIO * 1.50f;
+        float expectedDy = -6f * PointerBallistics.TRACKPAD_BASE_RATIO * 1.50f;
+        assertEquals(expectedDx, PointerBallistics.scaleDeltaX(10f, 0f, 3f, 16L, 1.50f, false), 0.0001f);
+        assertEquals(expectedDy, PointerBallistics.scaleDeltaY(0f, -6f, 3f, 16L, 1.50f, false), 0.0001f);
     }
 
     @Test public void scrollAccumulatorPreservesRemainderAndHonorsDirection() {

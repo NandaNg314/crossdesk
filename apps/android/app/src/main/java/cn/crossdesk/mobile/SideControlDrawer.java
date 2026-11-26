@@ -457,11 +457,12 @@ final class SideControlDrawer extends LinearLayout {
             speedHeader.addView(resetBtn, resetLp);
             speedBox.addView(speedHeader);
 
-            // Steps of 5% from 40% to 250% -> 0..42 (default 115% -> 15)
+            // Steps of 5% from 25% to 200% -> 0..35 (default 100% -> 15)
             SeekBar slider = new SeekBar(getContext());
-            slider.setMax(42);
-            int initialProgress = Math.max(0, Math.min(42,
-                    Math.round((PointerBallistics.sensitivityPercent(initialSensitivity) - 40) / 5f)));
+            slider.setMax(PointerBallistics.SLIDER_MAX_PROGRESS);
+            int initialProgress = Math.max(0, Math.min(PointerBallistics.SLIDER_MAX_PROGRESS,
+                    Math.round((PointerBallistics.sensitivityPercent(initialSensitivity) - PointerBallistics.SLIDER_MIN_PCT)
+                            / (float) PointerBallistics.SLIDER_STEP_PCT)));
             slider.setProgress(initialProgress);
             slider.setProgressTintList(ColorStateList.valueOf(MobileUi.BLUE));
             slider.setThumbTintList(ColorStateList.valueOf(Color.WHITE));
@@ -469,7 +470,7 @@ final class SideControlDrawer extends LinearLayout {
             slider.setContentDescription(L10n.tr("指针速度"));
 
             Runnable syncResetState = () -> {
-                int pct = 40 + slider.getProgress() * 5;
+                int pct = PointerBallistics.SLIDER_MIN_PCT + slider.getProgress() * PointerBallistics.SLIDER_STEP_PCT;
                 boolean changed = pct != defaultPct;
                 resetBtn.setEnabled(changed);
                 resetBtn.setAlpha(changed ? 1f : 0.45f);
@@ -479,7 +480,7 @@ final class SideControlDrawer extends LinearLayout {
 
             slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    int pct = 40 + progress * 5;
+                    int pct = PointerBallistics.SLIDER_MIN_PCT + progress * PointerBallistics.SLIDER_STEP_PCT;
                     speedPct.setText(pct + "%");
                     syncResetState.run();
                     if (fromUser) {
@@ -495,7 +496,7 @@ final class SideControlDrawer extends LinearLayout {
             resetBtn.setFocusable(true);
             resetBtn.setOnClickListener(v -> {
                 v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-                slider.setProgress(15);
+                slider.setProgress(PointerBallistics.SLIDER_DEFAULT_PROGRESS);
                 PointerBallistics.saveSensitivity(mousePrefs, PointerBallistics.DEFAULT_SENSITIVITY);
                 actions.onMousePreferencesChanged();
             });

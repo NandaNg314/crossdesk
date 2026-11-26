@@ -11,8 +11,10 @@ final class RemoteMouseInput {
 
     interface Sender { void send(float x, float y, int flag, int wheel); }
     interface RelativeMotion { void move(float dx, float dy, long dtMs); }
+    interface DirectPixelMotion { void movePixels(float dxPx, float dyPx); }
 
     RelativeMotion relativeMotion;
+    DirectPixelMotion directPixelMotion;
     Runnable buttonStateChanged;
     private final Sender sender;
     private float x = .5f, y = .5f;
@@ -40,12 +42,28 @@ final class RemoteMouseInput {
         send(0, 0);
     }
 
-    /** Moves the desktop pointer from the expanded virtual mouse body even without a held button. */
+    /**
+     * 1:1 physical finger-locked movement for the coupled VirtualMouseBar so the sculpted mouse
+     * stays glued underneath the user's thumb without ballistic overshoot.
+     */
     void virtualMouseMove(float dx, float dy, long dtMs) {
         if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
         if (viewportWidth <= 0 || viewportHeight <= 0) return;
-        if (relativeMotion != null) {
+        if (directPixelMotion != null) {
+            directPixelMotion.movePixels(dx, dy);
+        } else if (relativeMotion != null) {
             relativeMotion.move(dx, dy, dtMs);
+        } else {
+            move(x + dx / viewportWidth, y + dy / viewportHeight);
+        }
+    }
+
+    /** 1:1 physical finger-locked drag when holding Left/Right plate directly on VirtualMouseBar. */
+    void virtualMouseDrag(float dx, float dy) {
+        if (!hasVirtualButton() || viewportWidth <= 0 || viewportHeight <= 0) return;
+        if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
+        if (directPixelMotion != null) {
+            directPixelMotion.movePixels(dx, dy);
         } else {
             move(x + dx / viewportWidth, y + dy / viewportHeight);
         }

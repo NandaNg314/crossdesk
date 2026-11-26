@@ -672,18 +672,18 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         TextView resetSpeed=text(L10n.tr("重置"),13,true);resetSpeed.setTextColor(SECONDARY);resetSpeed.setPadding(dp(10),dp(4),dp(4),dp(4));
         speedTop.addView(resetSpeed);
         speedWrap.addView(speedTop);
-        SeekBar speedSeek=new SeekBar(this);speedSeek.setMax(42);
-        speedSeek.setProgress(Math.max(0,Math.min(42,Math.round((PointerBallistics.sensitivityPercent(initSens)-40)/5f))));
+        SeekBar speedSeek=new SeekBar(this);speedSeek.setMax(PointerBallistics.SLIDER_MAX_PROGRESS);
+        speedSeek.setProgress(Math.max(0,Math.min(PointerBallistics.SLIDER_MAX_PROGRESS,Math.round((PointerBallistics.sensitivityPercent(initSens)-PointerBallistics.SLIDER_MIN_PCT)/(float)PointerBallistics.SLIDER_STEP_PCT))));
         speedSeek.setProgressTintList(ColorStateList.valueOf(BLUE));speedSeek.setThumbTintList(ColorStateList.valueOf(BLUE));
         speedSeek.setContentDescription(L10n.tr("指针速度"));
-        Runnable syncSpeedReset=()->{int pct=40+speedSeek.getProgress()*5;boolean diff=pct!=defaultSpeedPct;resetSpeed.setEnabled(diff);resetSpeed.setAlpha(diff?1f:.4f);resetSpeed.setTextColor(diff?BLUE:SECONDARY);};
+        Runnable syncSpeedReset=()->{int pct=PointerBallistics.SLIDER_MIN_PCT+speedSeek.getProgress()*PointerBallistics.SLIDER_STEP_PCT;boolean diff=pct!=defaultSpeedPct;resetSpeed.setEnabled(diff);resetSpeed.setAlpha(diff?1f:.4f);resetSpeed.setTextColor(diff?BLUE:SECONDARY);};
         syncSpeedReset.run();
         speedSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
-            public void onProgressChanged(SeekBar s,int p,boolean fromUser){int pct=40+p*5;speedValue.setText(pct+"%");syncSpeedReset.run();if(fromUser)PointerBallistics.saveSensitivity(preferences,pct/100f);}
+            public void onProgressChanged(SeekBar s,int p,boolean fromUser){int pct=PointerBallistics.SLIDER_MIN_PCT+p*PointerBallistics.SLIDER_STEP_PCT;speedValue.setText(pct+"%");syncSpeedReset.run();if(fromUser)PointerBallistics.saveSensitivity(preferences,pct/100f);}
             public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){}
         });
         resetSpeed.setClickable(true);resetSpeed.setFocusable(true);
-        resetSpeed.setOnClickListener(v->{speedSeek.setProgress(15);PointerBallistics.saveSensitivity(preferences,PointerBallistics.DEFAULT_SENSITIVITY);});
+        resetSpeed.setOnClickListener(v->{speedSeek.setProgress(PointerBallistics.SLIDER_DEFAULT_PROGRESS);PointerBallistics.saveSensitivity(preferences,PointerBallistics.DEFAULT_SENSITIVITY);});
         speedWrap.addView(speedSeek,new LinearLayout.LayoutParams(-1,-2));
         mouse.addView(speedWrap);
         ui.divider(mouse);

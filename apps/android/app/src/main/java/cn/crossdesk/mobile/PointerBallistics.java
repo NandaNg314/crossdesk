@@ -8,7 +8,7 @@ import android.content.SharedPreferences;
  */
 final class PointerBallistics {
     static final String KEY_RELATIVE_MOUSE = "relativeMouse";
-    static final String KEY_POINTER_SENSITIVITY = "pointerSensitivity";
+    static final String KEY_POINTER_SENSITIVITY = "pointerSensitivityV2";
     static final String KEY_POINTER_ACCELERATION = "pointerAcceleration";
     static final String KEY_NATURAL_SCROLL = "naturalScroll";
     static final String KEY_VIRTUAL_MOUSE_RELATIVE = "virtualMouseRelative";
@@ -17,9 +17,16 @@ final class PointerBallistics {
     static final String KEY_VIRTUAL_MOUSE_NORM_X = "virtualMouseNormX";
     static final String KEY_VIRTUAL_MOUSE_NORM_Y = "virtualMouseNormY";
 
-    static final float MIN_SENSITIVITY = 0.40f;
-    static final float MAX_SENSITIVITY = 2.50f;
-    static final float DEFAULT_SENSITIVITY = 1.15f;
+    static final float MIN_SENSITIVITY = 0.25f;
+    static final float MAX_SENSITIVITY = 2.00f;
+    static final float DEFAULT_SENSITIVITY = 1.00f;
+    static final int SLIDER_MIN_PCT = 25;
+    static final int SLIDER_STEP_PCT = 5;
+    static final int SLIDER_MAX_PROGRESS = 35; // 25% .. 200%, default 100% -> progress 15
+    static final int SLIDER_DEFAULT_PROGRESS = 15;
+
+    // Base physical trackpad ratio at 100% user sensitivity, calibrated to UU Remote on 120/144Hz tablets.
+    static final float TRACKPAD_BASE_RATIO = 0.56f;
     static final boolean DEFAULT_ACCELERATION = true;
     static final boolean DEFAULT_NATURAL_SCROLL = true;
 
@@ -27,17 +34,18 @@ final class PointerBallistics {
     static final float SLOW_NUDGE_DEADZONE_DP = 1.0f;
     static final long TAP_STABILIZE_MS = 130L;
     static final float VIRTUAL_BUTTON_DEADZONE_DP = 4.5f;
-    static final float SCROLL_STEP_DP = 7.5f;
+    static final float SCROLL_STEP_DP = 13.0f;
 
-    static final float MIN_DT_MS = 4f;
+    static final float MIN_DT_MS = 8f;
     static final float MAX_DT_MS = 50f;
     static final float FALLBACK_DT_MS = 16f;
+    static final float SPEED_EMA_ALPHA = 0.30f;
 
-    private static final float SLOW_SPEED_DP_PER_MS = 0.18f;
-    private static final float FAST_SPEED_DP_PER_MS = 1.40f;
-    private static final float MIN_ACCEL_GAIN = 0.86f;
-    private static final float KNEE_ACCEL_GAIN = 0.96f;
-    private static final float MAX_ACCEL_GAIN = 2.20f;
+    private static final float SLOW_SPEED_DP_PER_MS = 0.30f;
+    private static final float FAST_SPEED_DP_PER_MS = 1.90f;
+    private static final float MIN_ACCEL_GAIN = 0.78f;
+    private static final float KNEE_ACCEL_GAIN = 0.92f;
+    private static final float MAX_ACCEL_GAIN = 1.65f;
 
     private PointerBallistics() {}
 
@@ -55,33 +63,53 @@ final class PointerBallistics {
         return Math.max(MIN_DT_MS, Math.min(MAX_DT_MS, (float) dtMs));
     }
 
-    /**
-     * Velocity-adaptive pointer gain:
-     * - Below 0.18 dp/ms: 0.86x..0.96x sub-pixel precision for small desktop targets.
-     * - 0.18..1.40 dp/ms: smooth Hermite ramp up to 2.20x for effortless 2K/4K traversal.
-     * - Clamped dt in [4ms, 50ms] prevents spikes on coalesced events or dropped frames.
-     */
-    static float accelerationGain(float distanceDp, long dtMs) {
-        if (!Float.isFinite(distanceDp) || distanceDp <= 0f) return MIN_ACCEL_GAIN;
-        float speed = distanceDp / clampDtMs(dtMs);
-        if (speed <= SLOW_SPEED_DP_PER_MS) {
-            return MIN_ACCEL_GAIN + (speed / SLOW_SPEED_DP_PER_MS) * (KNEE_ACCEL_GAIN - MIN_ACCEL_GAIN);
+    static float smoothSpeedDpPerMs(float prevSpeedDpPerMs, float distanceDp, long dtMs) {
+        if (!Float.isFinite(distanceDp) || distanceDp <= 0f) {
+            return Float.isFinite(prevSpeedDpPerMs) ? prevSpeedDpPerMs * (1f - SPEED_EMA_ALPHA) : 0f;
         }
-        if (speed >= FAST_SPEED_DP_PER_MS) {
+        float instant = distanceDp / clampDtMs(dtMs);
+        if (!Float.isFinite(prevSpeedDpPerMs) || prevSpeedDpPerMs <= 0f) {
+            return instant;
+        }
+        return SPEED_EMA_ALPHA * instant + (1f - SPEED_EMA_ALPHA) * prevSpeedDpPerMs;
+    }
+
+    /**
+     * Velocity-adaptive pointer gain (applied on top of TRACKPAD_BASE_RATIO * sensitivity):
+     * - Below 0.30 dp/ms: 0.78x..0.92x calm precision for tiny close buttons & text carets.
+     * - 0.30..1.90 dp/ms: smooth Hermite ramp up to 1.65x (net ~0.92x at 100% sensitivity) for controlled flicks.
+     * - Clamped dt in [8ms, 50ms] prevents spikes on 144Hz/240Hz coalesced events.
+     */
+    static float accelerationGainFromSpeed(float speedDpPerMs) {
+        if (!Float.isFinite(speedDpPerMs) || speedDpPerMs <= 0f) return MIN_ACCEL_GAIN;
+        if (speedDpPerMs <= SLOW_SPEED_DP_PER_MS) {
+            return MIN_ACCEL_GAIN + (speedDpPerMs / SLOW_SPEED_DP_PER_MS) * (KNEE_ACCEL_GAIN - MIN_ACCEL_GAIN);
+        }
+        if (speedDpPerMs >= FAST_SPEED_DP_PER_MS) {
             return MAX_ACCEL_GAIN;
         }
-        float t = (speed - SLOW_SPEED_DP_PER_MS) / (FAST_SPEED_DP_PER_MS - SLOW_SPEED_DP_PER_MS);
+        float t = (speedDpPerMs - SLOW_SPEED_DP_PER_MS) / (FAST_SPEED_DP_PER_MS - SLOW_SPEED_DP_PER_MS);
         float smooth = t * t * (3f - 2f * t);
         return KNEE_ACCEL_GAIN + smooth * (MAX_ACCEL_GAIN - KNEE_ACCEL_GAIN);
     }
 
+    static float accelerationGain(float distanceDp, long dtMs) {
+        if (!Float.isFinite(distanceDp) || distanceDp <= 0f) return MIN_ACCEL_GAIN;
+        return accelerationGainFromSpeed(distanceDp / clampDtMs(dtMs));
+    }
+
+    static float effectiveMultiplierForSpeed(float speedDpPerMs, float sensitivity, boolean acceleration) {
+        float base = TRACKPAD_BASE_RATIO * clampSensitivity(sensitivity);
+        if (!acceleration) return base;
+        return base * accelerationGainFromSpeed(speedDpPerMs);
+    }
+
     static float effectiveMultiplier(float dxPx, float dyPx, float density, long dtMs,
                                      float sensitivity, boolean acceleration) {
-        float base = clampSensitivity(sensitivity);
-        if (!acceleration) return base;
         float safeDensity = density > 0f && Float.isFinite(density) ? density : 1f;
         float distDp = (float) Math.hypot(dxPx, dyPx) / safeDensity;
-        return base * accelerationGain(distDp, dtMs);
+        float speed = distDp > 0f ? distDp / clampDtMs(dtMs) : 0f;
+        return effectiveMultiplierForSpeed(speed, sensitivity, acceleration);
     }
 
     static float scaleDeltaX(float dxPx, float dyPx, float density, long dtMs,
@@ -157,7 +185,7 @@ final class PointerBallistics {
      * Positive return value = emit N ticks of wheel UP (+1); negative = emit |N| ticks of wheel DOWN (-1).
      */
     static final class ScrollAccumulator {
-        private static final int MAX_TICKS_PER_STEP = 24;
+        private static final int MAX_TICKS_PER_STEP = 6;
         private float remainderPx;
 
         void reset() {

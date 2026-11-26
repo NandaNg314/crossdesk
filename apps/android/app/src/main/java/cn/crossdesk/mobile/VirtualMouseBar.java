@@ -380,7 +380,7 @@ final class VirtualMouseBar extends FrameLayout {
                                 activeStationaryButtons = Math.max(0, activeStationaryButtons - 1);
                             }
                             float ratio = Math.max(0f, (dist - deadzonePx) / Math.max(0.001f, dist));
-                            input.drag((rx - downRawX) * ratio, (ry - downRawY) * ratio, now - downTimeMs);
+                            input.virtualMouseDrag((rx - downRawX) * ratio, (ry - downRawY) * ratio);
                             lastRawX = rx;
                             lastRawY = ry;
                             lastTimeMs = now;
@@ -388,7 +388,7 @@ final class VirtualMouseBar extends FrameLayout {
                             float dx = rx - lastRawX;
                             float dy = ry - lastRawY;
                             if (dx != 0f || dy != 0f) {
-                                input.drag(dx, dy, now - lastTimeMs);
+                                input.virtualMouseDrag(dx, dy);
                                 lastRawX = rx;
                                 lastRawY = ry;
                                 lastTimeMs = now;
@@ -430,9 +430,8 @@ final class VirtualMouseBar extends FrameLayout {
         box.setOnTouchListener(new OnTouchListener() {
             int pointer = -1, startedGen;
             float downRawX, downRawY, lastRawX, lastRawY;
-            long downTimeMs, lastTimeMs;
-            boolean dragUnlocked;
-            boolean countedStationary;
+            long lastTimeMs;
+            boolean movedGrip;
 
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int action = event.getActionMasked();
@@ -441,13 +440,9 @@ final class VirtualMouseBar extends FrameLayout {
                     startedGen = generation;
                     downRawX = lastRawX = rawX(v, event, 0);
                     downRawY = lastRawY = rawY(v, event, 0);
-                    downTimeMs = lastTimeMs = event.getEventTime();
-                    dragUnlocked = false;
-                    countedStationary = true;
-                    activeStationaryButtons++;
-                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                    lastTimeMs = event.getEventTime();
+                    movedGrip = false;
                     silhouetteView.setButtonPressed(RemoteMouseInput.BUTTON_MIDDLE, true);
-                    input.virtualMiddle(true);
                     return true;
                 }
                 if (startedGen != generation || pointer == -1) return true;
@@ -457,16 +452,15 @@ final class VirtualMouseBar extends FrameLayout {
                         float rx = rawX(v, event, p);
                         float ry = rawY(v, event, p);
                         long now = event.getEventTime();
-                        if (!dragUnlocked) {
+                        if (!movedGrip) {
                             float dist = (float) Math.hypot(rx - downRawX, ry - downRawY);
                             if (dist < deadzonePx) return true;
-                            dragUnlocked = true;
-                            if (countedStationary) {
-                                countedStationary = false;
-                                activeStationaryButtons = Math.max(0, activeStationaryButtons - 1);
-                            }
+                            movedGrip = true;
+                            // "=" grip acts as UU Remote's center drag handle without triggering browser middle-button auto-scroll!
+                            silhouetteView.setButtonPressed(RemoteMouseInput.BUTTON_MIDDLE, false);
+                            silhouetteView.setPalmActive(true);
                             float ratio = Math.max(0f, (dist - deadzonePx) / Math.max(0.001f, dist));
-                            input.drag((rx - downRawX) * ratio, (ry - downRawY) * ratio, now - downTimeMs);
+                            input.virtualMouseMove((rx - downRawX) * ratio, (ry - downRawY) * ratio, now - lastTimeMs);
                             lastRawX = rx;
                             lastRawY = ry;
                             lastTimeMs = now;
@@ -474,7 +468,7 @@ final class VirtualMouseBar extends FrameLayout {
                             float dx = rx - lastRawX;
                             float dy = ry - lastRawY;
                             if (dx != 0f || dy != 0f) {
-                                input.drag(dx, dy, now - lastTimeMs);
+                                input.virtualMouseMove(dx, dy, now - lastTimeMs);
                                 lastRawX = rx;
                                 lastRawY = ry;
                                 lastTimeMs = now;
@@ -486,14 +480,16 @@ final class VirtualMouseBar extends FrameLayout {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                         || (action == MotionEvent.ACTION_POINTER_UP
                         && event.getPointerId(event.getActionIndex()) == pointer)) {
+                    boolean tapMiddle = action == MotionEvent.ACTION_UP && !movedGrip;
                     pointer = -1;
-                    dragUnlocked = false;
-                    if (countedStationary) {
-                        countedStationary = false;
-                        activeStationaryButtons = Math.max(0, activeStationaryButtons - 1);
-                    }
+                    movedGrip = false;
                     silhouetteView.setButtonPressed(RemoteMouseInput.BUTTON_MIDDLE, false);
-                    input.virtualMiddle(false);
+                    silhouetteView.setPalmActive(false);
+                    if (tapMiddle) {
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                        input.virtualMiddle(true);
+                        input.virtualMiddle(false);
+                    }
                 }
                 return true;
             }
@@ -510,7 +506,7 @@ final class VirtualMouseBar extends FrameLayout {
         wheel.setOnClickListener(v -> input.scroll(1));
 
         int touchSlop = ViewConfiguration.get(ui.context).getScaledTouchSlop();
-        float stepPx = 8f * density;
+        float stepPx = 12.5f * density;
         PointerBallistics.ScrollAccumulator wheelAccumulator = new PointerBallistics.ScrollAccumulator();
 
         wheel.setOnTouchListener(new OnTouchListener() {
