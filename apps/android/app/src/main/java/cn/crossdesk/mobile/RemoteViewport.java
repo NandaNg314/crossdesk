@@ -90,13 +90,21 @@ final class RemoteViewport {
 
     boolean panForAbsolutePointer(float x, float y, float inset) {
         int visibleHeight = containerHeight - keyboardInset;
-        if (keyboardInset <= 0 || y < 0 || y >= visibleHeight || !contains(x, y)) return false;
+        if (visibleHeight <= 0 || containerWidth <= 0 || !contains(x, y)) return false;
+        if (!isZoomed() && keyboardInset <= 0) return false;
+        if (y < 0 || y >= visibleHeight) return false;
+        float panX = 0f;
+        if (isZoomed() && x >= 0 && x < containerWidth) {
+            pointerInset = inset;
+            panX = clamp(followPointer(x, containerWidth, inset),
+                    Math.min(0, containerWidth - left() - width()), Math.max(0, -left()));
+        }
         // Reveal hidden content before mapping this surface position to the remote desktop.
-        float pan = clamp(followPointer(y, visibleHeight, inset),
+        float panY = clamp(followPointer(y, visibleHeight, inset),
             Math.min(0, visibleHeight - top() - height()), Math.max(0, -top()));
-        if (pan == 0) return false;
+        if (panX == 0 && panY == 0) return false;
         edgePanned = true;
-        panBy(0, pan);
+        panBy(panX, panY);
         return true;
     }
 

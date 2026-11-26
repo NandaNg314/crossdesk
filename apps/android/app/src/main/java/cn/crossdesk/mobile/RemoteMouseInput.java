@@ -10,8 +10,10 @@ final class RemoteMouseInput {
     static final int BUTTON_MIDDLE = 2;
 
     interface Sender { void send(float x, float y, int flag, int wheel); }
-    interface RelativeMotion { void move(float dx, float dy); }
+    interface RelativeMotion { void move(float dx, float dy, long dtMs); }
+
     RelativeMotion relativeMotion;
+    Runnable buttonStateChanged;
     private final Sender sender;
     private float x = .5f, y = .5f;
     private boolean gestureLeft, virtualLeft, virtualRight, virtualMiddle;
@@ -26,18 +28,41 @@ final class RemoteMouseInput {
         if (listener != null && !cancelListeners.contains(listener)) cancelListeners.add(listener);
     }
 
+    float x() { return x; }
+    float y() { return y; }
     boolean hasVirtualButton() { return virtualLeft || virtualRight || virtualMiddle; }
+    boolean hasAnyButton() { return gestureLeft || virtualLeft || virtualRight || virtualMiddle; }
     long revision() { return revision; }
 
     void move(float x, float y) {
-        this.x = Math.max(0, Math.min(1, x)); this.y = Math.max(0, Math.min(1, y));
+        this.x = Math.max(0, Math.min(1, x));
+        this.y = Math.max(0, Math.min(1, y));
         send(0, 0);
     }
 
+    /** Moves the desktop pointer from the expanded virtual mouse body even without a held button. */
+    void virtualMouseMove(float dx, float dy, long dtMs) {
+        if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
+        if (viewportWidth <= 0 || viewportHeight <= 0) return;
+        if (relativeMotion != null) {
+            relativeMotion.move(dx, dy, dtMs);
+        } else {
+            move(x + dx / viewportWidth, y + dy / viewportHeight);
+        }
+    }
+
     void drag(float dx, float dy) {
+        drag(dx, dy, (long) PointerBallistics.FALLBACK_DT_MS);
+    }
+
+    void drag(float dx, float dy, long dtMs) {
         if (!hasVirtualButton() || viewportWidth <= 0 || viewportHeight <= 0) return;
-        if (relativeMotion != null) relativeMotion.move(dx, dy);
-        else move(x + dx / viewportWidth, y + dy / viewportHeight);
+        if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
+        if (relativeMotion != null) {
+            relativeMotion.move(dx, dy, dtMs);
+        } else {
+            move(x + dx / viewportWidth, y + dy / viewportHeight);
+        }
     }
 
     void gestureLeft(boolean down) {
@@ -45,11 +70,13 @@ final class RemoteMouseInput {
         if (gestureLeft == down) return;
         gestureLeft = down;
         send(down ? 1 : 2, 0);
+        notifyButtonStateChanged();
     }
 
     void click(int down, int up) {
         if (hasVirtualButton()) return;
-        send(down, 0); send(up, 0);
+        send(down, 0);
+        send(up, 0);
     }
 
     void virtualButton(boolean left, boolean down) {
@@ -80,6 +107,7 @@ final class RemoteMouseInput {
             flag = down ? 5 : 6;
         }
         send(flag, 0);
+        notifyButtonStateChanged();
     }
 
     void scroll(int direction) {
@@ -94,6 +122,11 @@ final class RemoteMouseInput {
         revision++;
         if (didCancel != null) didCancel.run();
         for (Runnable listener : cancelListeners) listener.run();
+        notifyButtonStateChanged();
+    }
+
+    private void notifyButtonStateChanged() {
+        if (buttonStateChanged != null) buttonStateChanged.run();
     }
 
     private void send(int flag, int wheel) { sender.send(x, y, flag, wheel); }

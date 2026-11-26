@@ -3,6 +3,8 @@ package cn.crossdesk.mobile;
 import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -17,6 +19,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import java.util.ArrayList;
@@ -24,7 +27,7 @@ import java.util.List;
 
 /**
  * Slide-out Side Control Drawer from the right edge over a dim scrim.
- * Houses quick session tiles, touch-mode switch, floating keymap profile manager,
+ * Houses quick session tiles, touch-mode switch, mouse tuning controls, floating keymap profile manager,
  * and complete CrossDesk display / video / file / privacy / network controls.
  */
 @SuppressLint("ViewConstructor")
@@ -34,6 +37,7 @@ final class SideControlDrawer extends LinearLayout {
         void openKeymapEditor();
         void onKeymapChanged();
         void toggleVirtualMouse();
+        void setVirtualMouseVisible(boolean visible);
         boolean isVirtualMouseVisible();
     }
 
@@ -45,6 +49,7 @@ final class SideControlDrawer extends LinearLayout {
 
     private final MobileUi ui;
     private final FloatingKeymapStore keymapStore;
+    private final SharedPreferences mousePrefs;
     private final SessionControls.Actions actions;
     private final Host host;
 
@@ -80,10 +85,11 @@ final class SideControlDrawer extends LinearLayout {
     private static final int CONNECTION_MODE = 4, LOCAL_ENDPOINT = 5, REMOTE_ENDPOINT = 6, ENCRYPTION = 7;
 
     SideControlDrawer(Context context, MobileUi ui, FloatingKeymapStore keymapStore,
-                      SessionControls.Actions actions, Host host) {
+                      SharedPreferences mousePrefs, SessionControls.Actions actions, Host host) {
         super(context);
         this.ui = ui;
         this.keymapStore = keymapStore;
+        this.mousePrefs = mousePrefs;
         this.actions = actions;
         this.host = host;
 
@@ -184,7 +190,7 @@ final class SideControlDrawer extends LinearLayout {
     }
 
     void refreshState() {
-        if ("main".equals(page)) rebuild();
+        if ("main".equals(page) || "other".equals(page)) rebuild();
     }
 
     private void openSubPage(String next) {
@@ -225,7 +231,8 @@ final class SideControlDrawer extends LinearLayout {
         }
 
         String headerTitle = "main".equals(page) ? L10n.tr("远控操作")
-                : "video".equals(page) ? L10n.tr("画面设置") : L10n.tr("网络状态");
+                : "video".equals(page) ? L10n.tr("画面设置")
+                : "other".equals(page) ? L10n.tr("其他设置") : L10n.tr("网络状态");
         TextView titleTv = darkText(headerTitle, 15, true, TEXT_PRIMARY);
         headerRow.addView(titleTv, new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
 
@@ -236,6 +243,8 @@ final class SideControlDrawer extends LinearLayout {
             buildMainPage();
         } else if ("video".equals(page)) {
             buildVideoPage();
+        } else if ("other".equals(page)) {
+            buildOtherSettingsPage();
         } else {
             buildNetworkPage();
         }
@@ -275,15 +284,27 @@ final class SideControlDrawer extends LinearLayout {
 
         ui.gap(body, 12);
 
-        // 2. Touch Mode Segmented Switch: 屏幕触控 vs 鼠标指针
+        // 2. Touch Mode Segmented Switch: 屏幕触控 vs 鼠标指针 + Gesture Hint & Mouse Controls
         sectionTitle(L10n.tr("触控模式"));
         LinearLayout touchCard = cardBox();
-        touchCard.setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6));
-        touchCard.addView(darkSegments(
+        LinearLayout segWrap = ui.column();
+        segWrap.setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8));
+        segWrap.addView(darkSegments(
                 new String[]{L10n.tr("屏幕触控"), L10n.tr("鼠标指针")},
                 relative ? 1 : 0,
                 true,
                 idx -> actions.setRelativeMouse(idx == 1)));
+        TextView gestureHint = darkText(
+                L10n.tr(relative
+                        ? "单指滑动移指针 · 轻触左键 · 双击不松手拖拽 · 双指轻触右键 · 双指滑动滚轮"
+                        : "点按直达点击 · 单指滑动拖拽 · 长按/双指轻触右键 · 双指捏合缩放"),
+                11, false, TEXT_SECONDARY);
+        gestureHint.setLineSpacing(ui.dp(2), 1f);
+        gestureHint.setPadding(ui.dp(4), ui.dp(7), ui.dp(4), ui.dp(1));
+        segWrap.addView(gestureHint);
+        touchCard.addView(segWrap);
+
+        appendMouseControlsToCard(touchCard, relative);
         body.addView(touchCard);
 
         ui.gap(body, 12);
@@ -313,6 +334,8 @@ final class SideControlDrawer extends LinearLayout {
             host.closeDrawer();
             host.openKeymapEditor();
         });
+        cardDivider(keymapCard);
+        drawerRow(keymapCard, "settings", L10n.tr("其他设置"), "", () -> openSubPage("other"));
         body.addView(keymapCard);
 
         ui.gap(body, 12);
@@ -375,6 +398,146 @@ final class SideControlDrawer extends LinearLayout {
         saveLp.topMargin = ui.dp(6);
         body.addView(saveReceivedBtn, saveLp);
         renderFileStatus();
+    }
+
+    private void buildOtherSettingsPage() {
+        sectionTitle(L10n.tr("触控模式"));
+        LinearLayout modeCard = cardBox();
+        LinearLayout segWrap = ui.column();
+        segWrap.setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8));
+        segWrap.addView(darkSegments(
+                new String[]{L10n.tr("屏幕触控"), L10n.tr("鼠标指针")},
+                relative ? 1 : 0,
+                true,
+                idx -> {
+                    actions.setRelativeMouse(idx == 1);
+                    rebuild();
+                }));
+        TextView hint = darkText(
+                L10n.tr(relative
+                        ? "单指滑动移指针 · 轻触左键 · 双击不松手拖拽 · 双指轻触右键 · 双指滑动滚轮"
+                        : "点按直达点击 · 单指滑动拖拽 · 长按/双指轻触右键 · 双指捏合缩放"),
+                11, false, TEXT_SECONDARY);
+        hint.setLineSpacing(ui.dp(2), 1f);
+        hint.setPadding(ui.dp(4), ui.dp(7), ui.dp(4), ui.dp(2));
+        segWrap.addView(hint);
+        modeCard.addView(segWrap);
+        body.addView(modeCard);
+
+        ui.gap(body, 12);
+        sectionTitle(L10n.tr("鼠标控制"));
+        LinearLayout mouseCard = cardBox();
+        appendMouseControlsToCard(mouseCard, true);
+        body.addView(mouseCard);
+    }
+
+    private void appendMouseControlsToCard(LinearLayout card, boolean includePointerSpeedAndAccel) {
+        if (includePointerSpeedAndAccel) {
+            if (card.getChildCount() > 0) cardDivider(card);
+            LinearLayout speedBox = ui.column();
+            speedBox.setPadding(ui.dp(14), ui.dp(10), ui.dp(12), ui.dp(8));
+
+            LinearLayout speedHeader = ui.row();
+            speedHeader.addView(darkText(L10n.tr("指针速度"), 13, false, TEXT_PRIMARY),
+                    new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+
+            float initialSensitivity = PointerBallistics.loadSensitivity(mousePrefs);
+            int defaultPct = PointerBallistics.sensitivityPercent(PointerBallistics.DEFAULT_SENSITIVITY);
+
+            TextView speedPct = darkText(PointerBallistics.sensitivityPercent(initialSensitivity) + "%",
+                    12, true, 0xFF70B2FF);
+            speedPct.setFontFeatureSettings("tnum");
+            speedHeader.addView(speedPct);
+
+            TextView resetBtn = darkText(L10n.tr("重置"), 11, true, TEXT_SECONDARY);
+            resetBtn.setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3));
+            resetBtn.setBackground(ui.background(0xFF2C2C34, 6));
+            LayoutParams resetLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+            resetLp.leftMargin = ui.dp(8);
+            speedHeader.addView(resetBtn, resetLp);
+            speedBox.addView(speedHeader);
+
+            // Steps of 5% from 40% to 250% -> 0..42 (default 115% -> 15)
+            SeekBar slider = new SeekBar(getContext());
+            slider.setMax(42);
+            int initialProgress = Math.max(0, Math.min(42,
+                    Math.round((PointerBallistics.sensitivityPercent(initialSensitivity) - 40) / 5f)));
+            slider.setProgress(initialProgress);
+            slider.setProgressTintList(ColorStateList.valueOf(MobileUi.BLUE));
+            slider.setThumbTintList(ColorStateList.valueOf(Color.WHITE));
+            slider.setProgressBackgroundTintList(ColorStateList.valueOf(0x38FFFFFF));
+            slider.setContentDescription(L10n.tr("指针速度"));
+
+            Runnable syncResetState = () -> {
+                int pct = 40 + slider.getProgress() * 5;
+                boolean changed = pct != defaultPct;
+                resetBtn.setEnabled(changed);
+                resetBtn.setAlpha(changed ? 1f : 0.45f);
+                resetBtn.setTextColor(changed ? TEXT_PRIMARY : TEXT_SECONDARY);
+            };
+            syncResetState.run();
+
+            slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    int pct = 40 + progress * 5;
+                    speedPct.setText(pct + "%");
+                    syncResetState.run();
+                    if (fromUser) {
+                        PointerBallistics.saveSensitivity(mousePrefs, pct / 100f);
+                        actions.onMousePreferencesChanged();
+                    }
+                }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+            });
+
+            resetBtn.setClickable(true);
+            resetBtn.setFocusable(true);
+            resetBtn.setOnClickListener(v -> {
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                slider.setProgress(15);
+                PointerBallistics.saveSensitivity(mousePrefs, PointerBallistics.DEFAULT_SENSITIVITY);
+                actions.onMousePreferencesChanged();
+            });
+
+            LayoutParams sliderLp = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+            sliderLp.topMargin = ui.dp(4);
+            speedBox.addView(slider, sliderLp);
+            card.addView(speedBox);
+
+            cardDivider(card);
+            drawerSwitchRow(card, L10n.tr("指针动态加速"), PointerBallistics.loadAcceleration(mousePrefs), checked -> {
+                PointerBallistics.saveAcceleration(mousePrefs, checked);
+                actions.onMousePreferencesChanged();
+            });
+        }
+
+        if (card.getChildCount() > 0) cardDivider(card);
+        drawerSwitchRow(card, L10n.tr("悬浮虚拟鼠标"), host.isVirtualMouseVisible(),
+                host::setVirtualMouseVisible);
+
+        cardDivider(card);
+        drawerSwitchRow(card, L10n.tr("双指滚轮反向（自然滚动）"), PointerBallistics.loadNaturalScroll(mousePrefs), checked -> {
+            PointerBallistics.saveNaturalScroll(mousePrefs, checked);
+            actions.onMousePreferencesChanged();
+        });
+    }
+
+    private void drawerSwitchRow(LinearLayout parent, String title, boolean checked,
+                                 java.util.function.Consumer<Boolean> changed) {
+        LinearLayout row = ui.row();
+        row.setPadding(ui.dp(14), ui.dp(9), ui.dp(12), ui.dp(9));
+        row.addView(darkText(title, 13, false, TEXT_PRIMARY),
+                new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+        Switch sw = new Switch(getContext());
+        sw.setChecked(checked);
+        sw.setContentDescription(title);
+        sw.setOnCheckedChangeListener((b, isChecked) -> {
+            b.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            changed.accept(isChecked);
+        });
+        row.addView(sw);
+        parent.addView(row);
     }
 
     private void buildVideoPage() {

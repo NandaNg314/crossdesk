@@ -271,18 +271,23 @@ final class FloatingKeymapOverlay extends FrameLayout {
                 || widget.type == FloatingKeymapStore.WidgetType.MOUSE_MIDDLE) {
             int buttonIndex = widget.type == FloatingKeymapStore.WidgetType.MOUSE_LEFT ? 0
                     : widget.type == FloatingKeymapStore.WidgetType.MOUSE_RIGHT ? 1 : 2;
+            float deadzonePx = ui.dp(PointerBallistics.VIRTUAL_BUTTON_DEADZONE_DP);
             view.setOnTouchListener(new OnTouchListener() {
                 int pointer = -1;
                 int startedGen;
-                float lastX, lastY;
+                float downX, downY, lastX, lastY;
+                long downTimeMs, lastTimeMs;
+                boolean dragUnlocked;
 
                 @Override public boolean onTouch(View v, MotionEvent event) {
                     int action = event.getActionMasked();
                     if (action == MotionEvent.ACTION_DOWN) {
                         pointer = event.getPointerId(0);
                         startedGen = generation;
-                        lastX = event.getRawX();
-                        lastY = event.getRawY();
+                        downX = lastX = event.getRawX();
+                        downY = lastY = event.getRawY();
+                        downTimeMs = lastTimeMs = event.getEventTime();
+                        dragUnlocked = false;
                         v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                         control.applyHighlight(true);
                         mouseInput.virtualButton(buttonIndex, true);
@@ -294,9 +299,22 @@ final class FloatingKeymapOverlay extends FrameLayout {
                         if (p >= 0) {
                             float x = event.getRawX() + (event.getX(p) - event.getX());
                             float y = event.getRawY() + (event.getY(p) - event.getY());
-                            mouseInput.drag(x - lastX, y - lastY);
-                            lastX = x;
-                            lastY = y;
+                            long now = event.getEventTime();
+                            if (!dragUnlocked) {
+                                float dist = (float) Math.hypot(x - downX, y - downY);
+                                if (dist < deadzonePx) return true;
+                                dragUnlocked = true;
+                                float ratio = Math.max(0f, (dist - deadzonePx) / Math.max(0.001f, dist));
+                                mouseInput.drag((x - downX) * ratio, (y - downY) * ratio, now - downTimeMs);
+                                lastX = x;
+                                lastY = y;
+                                lastTimeMs = now;
+                            } else {
+                                mouseInput.drag(x - lastX, y - lastY, now - lastTimeMs);
+                                lastX = x;
+                                lastY = y;
+                                lastTimeMs = now;
+                            }
                         }
                         return true;
                     }
@@ -304,6 +322,7 @@ final class FloatingKeymapOverlay extends FrameLayout {
                             || (action == MotionEvent.ACTION_POINTER_UP
                             && event.getPointerId(event.getActionIndex()) == pointer)) {
                         pointer = -1;
+                        dragUnlocked = false;
                         control.applyHighlight(false);
                         mouseInput.virtualButton(buttonIndex, false);
                     }
@@ -313,10 +332,12 @@ final class FloatingKeymapOverlay extends FrameLayout {
         } else if (isWheel) {
             FloatingWheelPill wheelView = (FloatingWheelPill) view;
             int touchSlop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            PointerBallistics.ScrollAccumulator wheelAccumulator = new PointerBallistics.ScrollAccumulator();
+            float stepPx = ui.dp(8.5f);
             view.setOnTouchListener(new OnTouchListener() {
                 int pointer = -1;
                 int startedGen;
-                float downY, lastY, remainder;
+                float downY, lastY;
                 boolean scrolled;
 
                 @Override public boolean onTouch(View v, MotionEvent event) {
@@ -325,7 +346,7 @@ final class FloatingKeymapOverlay extends FrameLayout {
                         pointer = event.getPointerId(0);
                         startedGen = generation;
                         downY = lastY = event.getRawY();
-                        remainder = 0;
+                        wheelAccumulator.reset();
                         scrolled = false;
                         control.applyHighlight(true);
                         return true;
@@ -339,13 +360,15 @@ final class FloatingKeymapOverlay extends FrameLayout {
                             lastY = y;
                             if (Math.abs(y - downY) > touchSlop) scrolled = true;
                             wheelView.advance(dy);
-                            remainder += dy;
-                            float step = ui.dp(10);
-                            int ticks = (int) (remainder / step);
-                            for (int i = 0; i < Math.min(Math.abs(ticks), 32); i++) {
-                                mouseInput.scroll(ticks > 0 ? -1 : 1);
+                            int ticks = wheelAccumulator.consume(dy, stepPx, false);
+                            if (ticks != 0) {
+                                scrolled = true;
+                                int dir = ticks > 0 ? 1 : -1;
+                                for (int i = 0; i < Math.abs(ticks); i++) {
+                                    mouseInput.scroll(dir);
+                                }
+                                v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                             }
-                            remainder -= ticks * step;
                         }
                         return true;
                     }
@@ -359,7 +382,7 @@ final class FloatingKeymapOverlay extends FrameLayout {
                             mouseInput.scroll(topHalf ? 1 : -1);
                         }
                         pointer = -1;
-                        remainder = 0;
+                        wheelAccumulator.reset();
                         control.applyHighlight(false);
                     }
                     return true;

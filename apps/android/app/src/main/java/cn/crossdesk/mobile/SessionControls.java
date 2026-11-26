@@ -47,6 +47,7 @@ final class SessionControls extends FrameLayout {
         default void toggleViewOnly() { }
         default boolean isViewOnly() { return false; }
         default void setRelativeMouse(boolean relative) { }
+        default void onMousePreferencesChanged() { }
         void text(String value);
         void mute();
         void mouse();
@@ -64,6 +65,7 @@ final class SessionControls extends FrameLayout {
     private final Actions actions;
     private final Runnable keymapUpdated;
     private final SharedPreferences dockPrefs;
+    private final SharedPreferences settingsPrefs;
 
     private final LinearLayout waiting;
     private final LinearLayout edgeDock;
@@ -79,9 +81,14 @@ final class SessionControls extends FrameLayout {
 
     private final RemoteKeyboard keyboard;
     private final IntConsumer keyboardInsetChanged;
+    private java.util.function.Consumer<Boolean> expandedMouseVisibilityListener;
     private VirtualMouseBar mouseBar;
-    private float mouseX = Float.NaN, mouseY = Float.NaN;
-    private boolean mouseVisible = false, pictureInPicture, viewOnly;
+    private float collapsedMouseX = Float.NaN, collapsedMouseY = Float.NaN;
+    private float collapsedNormX = Float.NaN, collapsedNormY = Float.NaN;
+    private float lastCursorX = Float.NaN, lastCursorY = Float.NaN;
+    private boolean relativeMode = true;
+    private boolean mouseVisible = true, pictureInPicture, viewOnly;
+    private boolean lastNotifiedExpandedMouseVisible;
     private String hostPlatform = "windows";
 
     private boolean dockRight = true;
@@ -111,8 +118,16 @@ final class SessionControls extends FrameLayout {
         setClipToPadding(false);
 
         dockPrefs = context.getSharedPreferences("session_dock_v1", Context.MODE_PRIVATE);
+        settingsPrefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         dockRight = dockPrefs.getBoolean("dockRight", true);
         dockNormY = Math.max(0.08f, Math.min(0.88f, dockPrefs.getFloat("dockNormY", 0.28f)));
+        relativeMode = settingsPrefs.getBoolean(PointerBallistics.KEY_RELATIVE_MOUSE, true);
+        mouseVisible = PointerBallistics.loadVirtualMouseVisible(settingsPrefs, relativeMode);
+        if (settingsPrefs.contains(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_X)
+                && settingsPrefs.contains(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_Y)) {
+            collapsedNormX = bound(settingsPrefs.getFloat(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_X, 0.90f), 0.03f, 0.97f);
+            collapsedNormY = bound(settingsPrefs.getFloat(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_Y, 0.52f), 0.05f, 0.95f);
+        }
 
         keyboard = new RemoteKeyboard(context, ui, actions, () -> {
             requestLayout();
@@ -169,11 +184,12 @@ final class SessionControls extends FrameLayout {
         drawerScrim.setOnClickListener(v -> closeDrawer());
         addView(drawerScrim, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
-        drawer = new SideControlDrawer(context, ui, keymapStore, actions, new SideControlDrawer.Host() {
+        drawer = new SideControlDrawer(context, ui, keymapStore, settingsPrefs, actions, new SideControlDrawer.Host() {
             @Override public void closeDrawer() { SessionControls.this.closeDrawer(); }
             @Override public void openKeymapEditor() { SessionControls.this.openKeymapEditor(); }
             @Override public void onKeymapChanged() { keymapUpdated.run(); }
             @Override public void toggleVirtualMouse() { toggleMouse(); }
+            @Override public void setVirtualMouseVisible(boolean visible) { SessionControls.this.setVirtualMouseVisible(visible); }
             @Override public boolean isVirtualMouseVisible() { return mouseVisible; }
         });
         drawer.setVisibility(GONE);
@@ -427,8 +443,48 @@ final class SessionControls extends FrameLayout {
         keyboard.releaseLockedModifiers();
     }
 
+    void setExpandedMouseVisibilityListener(java.util.function.Consumer<Boolean> listener) {
+        expandedMouseVisibilityListener = listener;
+        notifyExpandedMouseVisibility();
+    }
+
+    private void notifyExpandedMouseVisibility() {
+        boolean expandedVisible = mouseBar != null && mouseBar.isExpanded()
+                && !pictureInPicture && !viewOnly && keymapEditor == null
+                && mouseVisible && waiting.getVisibility() == GONE;
+        if (lastNotifiedExpandedMouseVisible != expandedVisible) {
+            lastNotifiedExpandedMouseVisible = expandedVisible;
+            if (expandedMouseVisibilityListener != null) {
+                expandedMouseVisibilityListener.accept(expandedVisible);
+            }
+        }
+    }
+
+    void onCursorPositionChanged(float cursorPx, float cursorPy, boolean fromScreenTouch) {
+        lastCursorX = cursorPx;
+        lastCursorY = cursorPy;
+        if (mouseBar != null && mouseBar.isExpanded() && mouseVisible) {
+            if (fromScreenTouch && mouseBar.isStationaryButtonHold()) {
+                return;
+            }
+            positionMouse();
+        }
+    }
+
     void setRelative(boolean value) {
+        relativeMode = value;
+        mouseVisible = PointerBallistics.loadVirtualMouseVisible(settingsPrefs, value);
         drawer.setRelative(value);
+        positionMouse();
+    }
+
+    void setVirtualMouseVisible(boolean value) {
+        if (mouseVisible == value) return;
+        cancelMouseInput();
+        mouseVisible = value;
+        PointerBallistics.saveVirtualMouseVisible(settingsPrefs, relativeMode, value);
+        positionMouse();
+        drawer.post(drawer::refreshState);
     }
 
     void setViewOnly(boolean value) {
@@ -454,31 +510,50 @@ final class SessionControls extends FrameLayout {
 
     void attachMouseBar(FrameLayout safeArea, int controlsIndex, VirtualMouseBar bar) {
         mouseBar = bar;
+        boolean initialExpanded = settingsPrefs.getBoolean(PointerBallistics.KEY_VIRTUAL_MOUSE_EXPANDED, false);
+        bar.setExpanded(initialExpanded);
         safeArea.addView(bar, controlsIndex, new FrameLayout.LayoutParams(
                 ui.dp(bar.currentWidthDp()), ui.dp(bar.currentHeightDp()), Gravity.TOP | Gravity.LEFT));
         bar.setPositionHost(new VirtualMouseBar.PositionHost() {
-            @Override public void moveBy(float dx, float dy) {
-                float curX = Float.isNaN(mouseX) ? bar.getTranslationX() : mouseX;
-                float curY = Float.isNaN(mouseY) ? bar.getTranslationY() : mouseY;
-                mouseX = curX + dx;
-                mouseY = curY + dy;
+            @Override public void moveCollapsedBy(float dx, float dy) {
+                float curX = Float.isNaN(collapsedMouseX) ? bar.getTranslationX() : collapsedMouseX;
+                float curY = Float.isNaN(collapsedMouseY) ? bar.getTranslationY() : collapsedMouseY;
+                collapsedMouseX = curX + dx;
+                collapsedMouseY = curY + dy;
+                int w = getWidth();
+                int h = getHeight();
+                if (w > 0 && h > 0) {
+                    float barW = ui.dp(bar.currentWidthDp());
+                    float barH = ui.dp(bar.currentHeightDp());
+                    collapsedNormX = bound((collapsedMouseX + barW * 0.5f) / w, 0.03f, 0.97f);
+                    collapsedNormY = bound((collapsedMouseY + barH * 0.5f) / h, 0.05f, 0.95f);
+                }
                 positionMouse();
             }
 
+            @Override public void onCollapsedDragEnd() {
+                if (!Float.isNaN(collapsedNormX) && !Float.isNaN(collapsedNormY)) {
+                    settingsPrefs.edit()
+                            .putFloat(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_X, collapsedNormX)
+                            .putFloat(PointerBallistics.KEY_VIRTUAL_MOUSE_NORM_Y, collapsedNormY)
+                            .apply();
+                }
+            }
+
             @Override public void onStateChanged() {
+                settingsPrefs.edit()
+                        .putBoolean(PointerBallistics.KEY_VIRTUAL_MOUSE_EXPANDED, bar.isExpanded())
+                        .apply();
                 ViewGroup.LayoutParams lp = bar.getLayoutParams();
                 int nextW = ui.dp(bar.currentWidthDp());
                 int nextH = ui.dp(bar.currentHeightDp());
                 if (lp.width != nextW || lp.height != nextH) {
-                    // Keep visual center anchored when expanding/collapsing
-                    if (!Float.isNaN(mouseX) && !Float.isNaN(mouseY)) {
-                        mouseX += (lp.width - nextW) / 2f;
-                        mouseY += (lp.height - nextH) / 2f;
-                    }
                     lp.width = nextW;
                     lp.height = nextH;
                     bar.setLayoutParams(lp);
                 }
+                collapsedMouseX = Float.NaN;
+                collapsedMouseY = Float.NaN;
                 positionMouse();
             }
         });
@@ -503,15 +578,14 @@ final class SessionControls extends FrameLayout {
     }
 
     private void toggleMouse() {
-        cancelMouseInput();
-        mouseVisible = !mouseVisible;
-        positionMouse();
+        setVirtualMouseVisible(!mouseVisible);
     }
 
     private void positionMouse() {
         if (mouseBar == null) return;
         boolean visible = !pictureInPicture && !viewOnly && keymapEditor == null
                 && mouseVisible && waiting.getVisibility() == GONE;
+        notifyExpandedMouseVisibility();
         if (!visible) {
             if (mouseBar.getVisibility() == VISIBLE) cancelMouseInput();
             mouseBar.setVisibility(GONE);
@@ -523,21 +597,47 @@ final class SessionControls extends FrameLayout {
         float barH = ui.dp(mouseBar.currentHeightDp());
         if (w <= 0 || h <= 0) return;
 
-        float margin = ui.dp(8);
+        float margin = ui.dp(6);
         float gap = ui.dp(6);
-        float x = Float.isNaN(mouseX) ? w - barW - ui.dp(58) : mouseX;
-        float y = Float.isNaN(mouseY) ? h - barH - ui.dp(28) : mouseY;
-        float maxY = h - barH - margin;
+        float maxBottomLimit = h - margin;
         if (keyboard.isOpen() && keyboard.getTop() > 0) {
-            maxY = Math.min(maxY, keyboard.getTop() - barH - gap);
+            maxBottomLimit = Math.min(maxBottomLimit, keyboard.getTop() - gap);
         }
-        float clampedX = bound(x, margin, Math.max(margin, w - barW - margin));
-        float clampedY = bound(y, margin, Math.max(margin, maxY));
-        mouseX = clampedX;
-        mouseY = clampedY;
-        mouseBar.setTranslationX(clampedX);
-        mouseBar.setTranslationY(clampedY);
-        mouseBar.setVisibility(VISIBLE);
+
+        if (mouseBar.isExpanded()) {
+            // Coupled mode: dock the sculpted mouse right off the cursor arrow's lower-right shoulder.
+            float cx = Float.isNaN(lastCursorX) ? w * 0.5f : lastCursorX;
+            float cy = Float.isNaN(lastCursorY) ? h * 0.5f : lastCursorY;
+            float clampedX = PointerBallistics.coupledMouseCoord(
+                    cx, ui.dp(VirtualMouseBar.COUPLED_OFFSET_X_DP), barW, margin, w - margin);
+            float clampedY = PointerBallistics.coupledMouseCoord(
+                    cy, ui.dp(VirtualMouseBar.COUPLED_OFFSET_Y_DP), barH, margin, maxBottomLimit);
+            mouseBar.setTranslationX(clampedX);
+            mouseBar.setTranslationY(clampedY);
+            mouseBar.setVisibility(VISIBLE);
+        } else {
+            // Collapsed mini mouse badge: park at user's chosen spot (default: right margin beside dock).
+            float rawX;
+            float rawY;
+            if (!Float.isNaN(collapsedMouseX) && !Float.isNaN(collapsedMouseY)) {
+                rawX = collapsedMouseX;
+                rawY = collapsedMouseY;
+            } else if (!Float.isNaN(collapsedNormX) && !Float.isNaN(collapsedNormY)) {
+                rawX = collapsedNormX * w - barW * 0.5f;
+                rawY = collapsedNormY * h - barH * 0.5f;
+            } else {
+                rawX = dockRight ? (w - barW - ui.dp(56)) : (w - barW - ui.dp(12));
+                rawY = h * 0.52f - barH * 0.5f;
+            }
+            float maxY = Math.max(margin, maxBottomLimit - barH);
+            float clampedX = bound(rawX, margin, Math.max(margin, w - barW - margin));
+            float clampedY = bound(rawY, margin, maxY);
+            collapsedMouseX = clampedX;
+            collapsedMouseY = clampedY;
+            mouseBar.setTranslationX(clampedX);
+            mouseBar.setTranslationY(clampedY);
+            mouseBar.setVisibility(VISIBLE);
+        }
     }
 
     void setMuted(boolean value) {

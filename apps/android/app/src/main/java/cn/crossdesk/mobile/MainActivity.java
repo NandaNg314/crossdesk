@@ -146,7 +146,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         previewSwitch=null;clearPreviewsButton=null;previewCleanupError=null;previewCards.clear();recentGrid=null;
         canvas=new FrameLayout(this);canvas.setBackgroundColor(dark?Color.BLACK:BACKGROUND);
         safeArea=new FrameLayout(this);safeArea.setMotionEventSplittingEnabled(true);canvas.addView(safeArea,new FrameLayout.LayoutParams(-1,-1));
-        root=ui.pageColumn(dark?0:nextPage.equals("home")?1200:720);
+        root=ui.pageColumn(dark?0:nextPage.equals("home")?1200:720);root.setMotionEventSplittingEnabled(true);
         safeArea.addView(root,new FrameLayout.LayoutParams(-1,-1,Gravity.TOP|Gravity.CENTER_HORIZONTAL));
         safeArea.setOnApplyWindowInsetsListener((view,insets)->{
             if(dark&&(pictureInPictureUi||isInPictureInPictureMode())){view.setPadding(0,0,0,0);return insets;}
@@ -610,12 +610,17 @@ public final class MainActivity extends Activity implements NativeSession.Listen
                 if(video!=null)video.setRelative(relative);
                 if(controls!=null)controls.setRelative(relative);
             }
+            public void onMousePreferencesChanged(){
+                if(video!=null)video.reloadMousePreferences(preferences);
+            }
             public void text(String value){if(video==null||!video.isViewOnly())sendText(value);}
             public void mute(){muted=!muted;if(session!=null)session.control(2,muted?0:1);controls.setMuted(muted);}
             public void mouse(){boolean relative=!preferences.getBoolean("relativeMouse",true);setRelativeMouse(relative);}
             public void displayResolution(RemoteDisplayResolutions.Mode mode){updateDisplayResolution(mode);}
             public void videoSettings(int field,int value){RemoteVideoSettings.Values old=MainActivity.this.videoSettings.selection;updateVideoSettings(new RemoteVideoSettings.Values(field==0?value:old.quality,field==1?value:old.frameRate,field==2?value:old.preference));}
         });
+        controls.setExpandedMouseVisibilityListener(expandedVisible->{if(video!=null)video.setForceCursorVisible(expandedVisible);});
+        video.cursorPositionListener=(sx,sy,fromScreenTouch)->{if(controls!=null)controls.onCursorPositionChanged(sx,sy,fromScreenTouch);};
         controls.setHostPlatform(hostPlatform);controls.setRelative(preferences.getBoolean("relativeMouse",true));controls.setViewOnly(initialViewOnly);controls.setMuted(muted);controls.videoSettings(videoSettings);controls.displayResolutions(displayResolutions,selectedDisplay);root.addView(controls,new LinearLayout.LayoutParams(-1,-1));getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         controls.attachMouseBar(safeArea,safeArea.indexOfChild(root),new VirtualMouseBar(ui,video.mouseInput));
         syncKeymap.run();
@@ -623,6 +628,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         video.remoteFocusChanged=()->{if(controls!=null)controls.resetKeyboardContext();};
         controls.requestApplyInsets();
         video.addOnLayoutChangeListener((view,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
+            if(controls!=null&&video!=null)controls.onCursorPositionChanged(video.cursorScreenX(),video.cursorScreenY(),false);
             if(!pictureInPictureUi&&!isInPictureInPictureMode())updatePictureInPicture();
         });
         pictureInPicture.connected();updatePictureInPicture();
@@ -650,8 +656,44 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     }
     private void settings(){
         LinearLayout content=formPage("settings",L10n.tr("设置"),()->home(""));
-        LinearLayout mouse=section(content,L10n.tr("鼠标控制"),MobileUi.SETTINGS_CARD_RADIUS);mouse.setPadding(dp(12),dp(12),dp(12),dp(12));boolean relative=preferences.getBoolean("relativeMouse",true);
-        mouse.addView(segments(new String[]{L10n.tr("相对位置"),L10n.tr("绝对位置")},relative?0:1,true,index->preferences.edit().putBoolean("relativeMouse",index==0).apply()));
+        LinearLayout mouse=section(content,L10n.tr("鼠标控制"),MobileUi.SETTINGS_CARD_RADIUS);boolean relative=preferences.getBoolean("relativeMouse",true);
+        LinearLayout mousePickerWrap=column();mousePickerWrap.setPadding(dp(12),dp(12),dp(12),dp(10));
+        mousePickerWrap.addView(segments(new String[]{L10n.tr("相对位置"),L10n.tr("绝对位置")},relative?0:1,true,index->preferences.edit().putBoolean("relativeMouse",index==0).apply()));
+        mouse.addView(mousePickerWrap);
+        ui.divider(mouse);
+        LinearLayout speedWrap=column();speedWrap.setPadding(dp(16),dp(12),dp(16),dp(10));
+        LinearLayout speedTop=row();
+        speedTop.addView(text(L10n.tr("指针速度"),16,false),new LinearLayout.LayoutParams(0,-2,1));
+        int defaultSpeedPct=PointerBallistics.sensitivityPercent(PointerBallistics.DEFAULT_SENSITIVITY);
+        float initSens=PointerBallistics.loadSensitivity(preferences);
+        TextView speedValue=text(PointerBallistics.sensitivityPercent(initSens)+"%",14,true);
+        speedValue.setTextColor(BLUE);speedValue.setFontFeatureSettings("tnum");
+        speedTop.addView(speedValue);
+        TextView resetSpeed=text(L10n.tr("重置"),13,true);resetSpeed.setTextColor(SECONDARY);resetSpeed.setPadding(dp(10),dp(4),dp(4),dp(4));
+        speedTop.addView(resetSpeed);
+        speedWrap.addView(speedTop);
+        SeekBar speedSeek=new SeekBar(this);speedSeek.setMax(42);
+        speedSeek.setProgress(Math.max(0,Math.min(42,Math.round((PointerBallistics.sensitivityPercent(initSens)-40)/5f))));
+        speedSeek.setProgressTintList(ColorStateList.valueOf(BLUE));speedSeek.setThumbTintList(ColorStateList.valueOf(BLUE));
+        speedSeek.setContentDescription(L10n.tr("指针速度"));
+        Runnable syncSpeedReset=()->{int pct=40+speedSeek.getProgress()*5;boolean diff=pct!=defaultSpeedPct;resetSpeed.setEnabled(diff);resetSpeed.setAlpha(diff?1f:.4f);resetSpeed.setTextColor(diff?BLUE:SECONDARY);};
+        syncSpeedReset.run();
+        speedSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar s,int p,boolean fromUser){int pct=40+p*5;speedValue.setText(pct+"%");syncSpeedReset.run();if(fromUser)PointerBallistics.saveSensitivity(preferences,pct/100f);}
+            public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){}
+        });
+        resetSpeed.setClickable(true);resetSpeed.setFocusable(true);
+        resetSpeed.setOnClickListener(v->{speedSeek.setProgress(15);PointerBallistics.saveSensitivity(preferences,PointerBallistics.DEFAULT_SENSITIVITY);});
+        speedWrap.addView(speedSeek,new LinearLayout.LayoutParams(-1,-2));
+        mouse.addView(speedWrap);
+        ui.divider(mouse);
+        LinearLayout accelRow=row();accelRow.setPadding(dp(16),dp(10),dp(16),dp(10));accelRow.addView(text(L10n.tr("指针动态加速"),16,false),new LinearLayout.LayoutParams(0,-2,1));
+        Switch accelSwitch=new Switch(this);accelSwitch.setContentDescription(L10n.tr("指针动态加速"));accelSwitch.setChecked(PointerBallistics.loadAcceleration(preferences));
+        accelSwitch.setOnCheckedChangeListener((b,checked)->PointerBallistics.saveAcceleration(preferences,checked));accelRow.addView(accelSwitch);mouse.addView(accelRow);
+        ui.divider(mouse);
+        LinearLayout naturalRow=row();naturalRow.setPadding(dp(16),dp(10),dp(16),dp(10));naturalRow.addView(text(L10n.tr("双指滚轮反向（自然滚动）"),16,false),new LinearLayout.LayoutParams(0,-2,1));
+        Switch naturalSwitch=new Switch(this);naturalSwitch.setContentDescription(L10n.tr("双指滚轮反向（自然滚动）"));naturalSwitch.setChecked(PointerBallistics.loadNaturalScroll(preferences));
+        naturalSwitch.setOnCheckedChangeListener((b,checked)->PointerBallistics.saveNaturalScroll(preferences,checked));naturalRow.addView(naturalSwitch);mouse.addView(naturalRow);
         LinearLayout picture=section(content,L10n.tr("画面偏好"),MobileUi.SETTINGS_CARD_RADIUS);picture.setPadding(dp(12),dp(12),dp(12),dp(12));int preference=Math.max(0,Math.min(2,preferences.getInt("videoPreference",1)));
         picture.addView(segments(RemoteVideoSettings.preferences(),preference,true,index->preferences.edit().putInt("videoPreference",index).apply()));ui.gap(content,28);
         LinearLayout direction=section(content,L10n.tr("屏幕方向"),MobileUi.SETTINGS_CARD_RADIUS);LinearLayout directionRow=row();directionRow.setPadding(dp(16),dp(10),dp(16),dp(10));directionRow.addView(text(L10n.tr("连接建立后锁定横屏"),16,false),new LinearLayout.LayoutParams(0,-2,1));

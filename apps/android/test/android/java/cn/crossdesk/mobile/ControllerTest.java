@@ -95,11 +95,119 @@ public class ControllerTest {
         input.viewportHeight = 800;
         input.virtualMiddle(true);
         assertTrue(input.hasVirtualButton());
+        assertTrue(input.hasAnyButton());
         input.drag(50, -40);
         input.releaseAll();
         assertFalse(input.hasVirtualButton());
+        assertFalse(input.hasAnyButton());
         assertTrue(flags.contains(5));
         assertTrue(flags.contains(6));
+    }
+
+    @Test public void pointerBallisticsAdaptsPrecisionAndFlickWithSafeDtClamping() {
+        assertEquals(0.40f, PointerBallistics.clampSensitivity(0.10f), 0.0001f);
+        assertEquals(2.50f, PointerBallistics.clampSensitivity(9.00f), 0.0001f);
+        assertEquals(PointerBallistics.DEFAULT_SENSITIVITY, PointerBallistics.clampSensitivity(Float.NaN), 0.0001f);
+
+        assertEquals(4f, PointerBallistics.clampDtMs(1L), 0.0001f);
+        assertEquals(50f, PointerBallistics.clampDtMs(400L), 0.0001f);
+        assertEquals(16f, PointerBallistics.clampDtMs(0L), 0.0001f);
+
+        // Slow precision crawl (< 0.18 dp/ms) stays in [0.85, 0.96]
+        float slowGain = PointerBallistics.accelerationGain(1.2f, 16L); // 0.075 dp/ms
+        assertTrue("Slow finger speed should retain sub-1.0 precision gain", slowGain >= 0.85f && slowGain <= 0.96f);
+
+        // Fast flick (> 1.40 dp/ms) ramps smoothly up to 2.20x cap
+        float midGain = PointerBallistics.accelerationGain(10f, 16L); // 0.625 dp/ms
+        float fastGain = PointerBallistics.accelerationGain(30f, 16L); // 1.875 dp/ms -> 2.20x
+        assertTrue(midGain > slowGain && midGain < fastGain);
+        assertEquals(2.20f, fastGain, 0.0001f);
+
+        // Dropped frame (dt = 250ms clamped to 50ms) never exceeds max cap
+        float stalledGain = PointerBallistics.accelerationGain(100f, 250L);
+        assertTrue(stalledGain <= 2.20f);
+
+        // Acceleration OFF uses exact linear sensitivity multiplier
+        assertEquals(15f, PointerBallistics.scaleDeltaX(10f, 0f, 3f, 16L, 1.50f, false), 0.0001f);
+        assertEquals(-9f, PointerBallistics.scaleDeltaY(0f, -6f, 3f, 16L, 1.50f, false), 0.0001f);
+    }
+
+    @Test public void scrollAccumulatorPreservesRemainderAndHonorsDirection() {
+        PointerBallistics.ScrollAccumulator acc = new PointerBallistics.ScrollAccumulator();
+        float step = 7.5f;
+
+        // Sub-step movements preserve remainder until crossing threshold
+        assertEquals(0, acc.consume(3.0f, step, true));
+        assertEquals(0, acc.consume(3.0f, step, true));
+        assertEquals(1, acc.consume(3.0f, step, true)); // 9.0 -> 1 tick (+1), remainder 1.5
+        assertEquals(1.5f, acc.remainder(), 0.001f);
+        assertEquals(1, acc.consume(6.2f, step, true)); // 1.5 + 6.2 = 7.7 -> 1 tick (+1), remainder 0.2
+
+        acc.reset();
+        // Natural scroll: fingers up (dy < 0) -> content up / wheel down (-1)
+        assertEquals(-2, acc.consume(-16.0f, step, true));
+
+        acc.reset();
+        // Standard wheel: fingers down (dy > 0) -> wheel down (-1); fingers up -> wheel up (+1)
+        assertEquals(-2, acc.consume(16.0f, step, false));
+        acc.reset();
+        assertEquals(2, acc.consume(-16.0f, step, false));
+    }
+
+    @Test public void virtualButtonMaintainsHoldAcrossSimultaneousRelativeMotion() {
+        java.util.List<Integer> flags = new java.util.ArrayList<>();
+        float[] pos = {0.5f, 0.5f};
+        RemoteMouseInput input = new RemoteMouseInput((x, y, flag, wheel) -> {
+            pos[0] = x;
+            pos[1] = y;
+            flags.add(flag);
+        });
+        input.viewportWidth = 1000f;
+        input.viewportHeight = 500f;
+        input.relativeMotion = (dx, dy, dtMs) -> input.move(pos[0] + dx / 1000f, pos[1] + dy / 500f);
+
+        // Right thumb holds virtual left button (1)
+        input.virtualButton(RemoteMouseInput.BUTTON_LEFT, true);
+        assertTrue(input.hasVirtualButton());
+        assertEquals(java.util.List.of(1), flags);
+
+        // Left thumb moves cursor on video surface & lifts without releasing virtual button
+        input.virtualMouseMove(100f, -50f, 16L);
+        input.gestureLeft(true); // Must be ignored while virtual button is held
+        input.click(1, 2);       // Spurious click must be ignored while virtual button is held
+        assertTrue(input.hasVirtualButton());
+        assertEquals(0.60f, input.x(), 0.0001f);
+        assertEquals(0.40f, input.y(), 0.0001f);
+        assertFalse("Virtual left button must not emit button-up (2) until released", flags.contains(2));
+
+        // Right thumb finally lifts off VirtualMouseBar -> emits button-up (2)
+        input.virtualButton(RemoteMouseInput.BUTTON_LEFT, false);
+        assertFalse(input.hasVirtualButton());
+        assertEquals(2, (int) flags.get(flags.size() - 1));
+    }
+
+    @Test public void coupledVirtualMouseClampingAndPerModeVisibility() {
+        // Coupled mouse stays offset by +40px normally, and clamps cleanly at right/left edges
+        assertEquals(540f, PointerBallistics.coupledMouseCoord(500f, 40f, 280f, 12f, 1908f), 0.001f);
+        assertEquals(1628f, PointerBallistics.coupledMouseCoord(1890f, 40f, 280f, 12f, 1908f), 0.001f);
+        assertEquals(12f, PointerBallistics.coupledMouseCoord(0f, -20f, 280f, 12f, 1908f), 0.001f);
+
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        var prefs = context.getSharedPreferences("mouse_test_prefs", Context.MODE_PRIVATE);
+        prefs.edit().clear().commit();
+        try {
+            assertTrue("Relative pointer mode defaults to showing floating virtual mouse",
+                    PointerBallistics.loadVirtualMouseVisible(prefs, true));
+            assertFalse("Direct touch mode defaults to hiding floating virtual mouse",
+                    PointerBallistics.loadVirtualMouseVisible(prefs, false));
+
+            PointerBallistics.saveVirtualMouseVisible(prefs, true, false);
+            PointerBallistics.saveVirtualMouseVisible(prefs, false, true);
+            assertFalse(PointerBallistics.loadVirtualMouseVisible(prefs, true));
+            assertTrue(PointerBallistics.loadVirtualMouseVisible(prefs, false));
+        } finally {
+            prefs.edit().clear().commit();
+        }
     }
 
     @Test public void floatingKeymapStorePersistsProfilesAndWidgets() {
