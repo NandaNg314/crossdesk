@@ -5,12 +5,16 @@ on:
     branches:
       - "**"
       - "!ci/linux-build-image"
+      - "!custom/fork-docs"
+    paths-ignore:
+      - "**.md"
     tags:
       - "*"
       - "!ios-v*"
       - "!android-v*"
       - "!cli-v*"
       - "!mcp-v*"
+      - "!all-in-one-*"
   workflow_dispatch:
     inputs:
       desktop_version:
