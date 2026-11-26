@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/images/crossdesk-banner.svg" width="420" alt="CrossDesk 标志：图标在左，双色文字在右" />
   <p>轻量、跨平台的远程桌面，支持电脑、浏览器、移动端和终端连接，用桌面墙集中查看与操控多台设备。</p>
-  <p><a href="https://www.crossdesk.cn/">官方网站</a> · <a href="https://github.com/kunkundi/crossdesk/releases">下载客户端</a> · <a href="#build">构建指南</a> · <a href="https://web.crossdesk.cn/">打开 Web 客户端</a> · <a href="README.md">English</a> · <a href="README_JA.md">日本語</a></p>
+  <p><a href="https://github.com/NandaNg314/crossdesk/releases"><strong>下载 Fork 增强版</strong></a> · <a href="#fork-enhancements">增强版说明</a> · <a href="https://www.crossdesk.cn/">官方网站</a> · <a href="https://github.com/kunkundi/crossdesk/releases">上游原版</a> · <a href="#build">构建指南</a> · <a href="https://web.crossdesk.cn/">打开 Web 客户端</a> · <a href="README.md">English</a> · <a href="README_JA.md">日本語</a></p>
 </div>
 
 <div align="center">
@@ -10,9 +10,10 @@
 
 [![Clients](https://img.shields.io/badge/client-Desktop%20%7C%20Mobile%20%7C%20Web%20%7C%20CLI-2ea44f?style=flat)](#download)
 
-[![Release](https://img.shields.io/github/v/release/kunkundi/crossdesk?style=flat)](https://github.com/kunkundi/crossdesk/releases)
+[![Fork Release](https://img.shields.io/github/v/release/NandaNg314/crossdesk?include_prereleases&label=fork%20release&color=0071E3&style=flat)](https://github.com/NandaNg314/crossdesk/releases)
+[![Upstream Release](https://img.shields.io/github/v/release/kunkundi/crossdesk?style=flat&label=upstream)](https://github.com/kunkundi/crossdesk/releases)
 [![npm](https://img.shields.io/npm/v/%40chunkdash%2Fcrossdesk-cli?style=flat)](https://www.npmjs.com/package/@chunkdash/crossdesk-cli)
-[![Build](https://img.shields.io/github/actions/workflow/status/kunkundi/crossdesk/build.yml?style=flat&label=build)](https://github.com/kunkundi/crossdesk/actions/workflows/build.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/NandaNg314/crossdesk/build.yml?branch=custom%2Fall-in-one&style=flat&label=fork%20build)](https://github.com/NandaNg314/crossdesk/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/kunkundi/crossdesk?style=flat&label=stars)](https://github.com/kunkundi/crossdesk/stargazers)
 
@@ -27,6 +28,32 @@
   <a href="https://trendshift.io/repositories/17514?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17514" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17514/weekly?language=C%2B%2B" alt="kunkundi%2Fcrossdesk | Trendshift" width="250" height="55"/></a>
   <a href="https://trendshift.io/repositories/17514?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-17514" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/17514/monthly?language=C%2B%2B" alt="kunkundi%2Fcrossdesk | Trendshift" width="250" height="55"/></a>
 </p>
+
+<a id="fork-enhancements"></a>
+
+## Fork 全特性增强版说明（All-in-One Build）
+
+> [!IMPORTANT]
+> 本仓库（[`NandaNg314/crossdesk`](https://github.com/NandaNg314/crossdesk)）基于官方上游项目 [`kunkundi/crossdesk`](https://github.com/kunkundi/crossdesk)（遵循 `GPL-3.0-only` 协议）构建与维护。
+> 默认分支 `custom/all-in-one` 集成了全部已提交至上游但尚未合入正式版的桌面端核心修复 PR，以及针对 Android 平板 / 手机控制端的类 UU 远程触控定制增强。可直接前往 [**Fork Releases 下载页**](https://github.com/NandaNg314/crossdesk/releases) 获取预编译安装包。
+
+### 集成增强与修复清单
+
+| 模块 / 平台 | 增强与修复内容 | 对应来源 |
+| --- | --- | --- |
+| **Android 控制端** | **类 UU 远程虚拟鼠标与触控交互重构**：高精矢量冰白双键滚轮鼠标面板、手指拖动鼠标面板时远端桌面指针 `1:1` 实时联动、针对 120Hz/144Hz 高刷屏调校的触控板非线性灵敏度曲线、双指轻点右键及沉浸式侧边快捷抽屉 | [`feat/android-uu-controls`](https://github.com/NandaNg314/crossdesk/tree/feat/android-uu-controls)（Fork 专属定制） |
+| **Windows 被控端** | **HDR 桌面采集与硬件色调映射**：支持 DXGI `DuplicateOutput1` 与 WGC `FP16`（scRGB / HDR10 PQ）采集、D3D11 GPU 色调映射、显示器 SDR 白电平自适应重试与输出缓存优化，解决开启系统 HDR 后远控画面过曝泛白或黑屏的问题 | [上游 PR #303](https://github.com/kunkundi/crossdesk/pull/303) |
+| **跨平台被控端** | **超 4K（`> 4096×4096`）高分屏 / 带鱼屏自动等比限幅缩放**：当采集分辨率单边超过硬件编码器上限（如 5K/6K、5120×1440、7680×2160 或多屏拼接）时，采集阶段在 GPU 侧自动等比缩放至 `4096` 以内并保持偶数对齐与鼠标坐标 `1:1` 映射，解决 NVENC/NVDEC 超限持续黑屏 | [上游 PR #316](https://github.com/kunkundi/crossdesk/pull/316) |
+| **跨平台会话输入** | **远程会话修饰键防卡死与焦点同步**：修复点击远程窗口误触发长段 `Shift` 选字、断开或切窗后本机 `Shift` 状态残留，以及快速切换窗口导致 `Esc` 变 `Win` 等修饰键错乱问题 | [上游 PR #315](https://github.com/kunkundi/crossdesk/pull/315) |
+| **跨平台会话输入** | **四向滚轮左右倾斜（横向滚动）方向修正**：统一修正 Windows / macOS / Linux 下鼠标滚轮左右拨动方向与预期相反的问题 | [上游 PR #311](https://github.com/kunkundi/crossdesk/pull/311) |
+| **桌面端设备管理** | **设备分组重命名与弹窗快捷管理**：支持设备分组重命名并自动迁移组内设备，同时在顶部分组筛选器与设备卡片“修改分组”弹窗中补齐重命名与删除入口 | [上游 PR #314](https://github.com/kunkundi/crossdesk/pull/314) |
+| **Windows 桌面端** | **开机自启静默驻留托盘增强**：增加系统托盘就绪重试及 `TaskbarCreated` 重建恢复，解决冷启动或延迟登录时托盘未就绪导致主窗口弹出的问题 | [上游 PR #312](https://github.com/kunkundi/crossdesk/pull/312) |
+| **Windows 服务与权限** | **无人值守身份目录 DACL 权限自愈**：自动检测并修复 `ProgramData\CrossDesk` 权限异常，消除后台服务与 GUI 进程读写不一致引发的闪退重启循环 | [上游 PR #310](https://github.com/kunkundi/crossdesk/pull/310) |
+
+### 分支约定与升级说明
+
+- **分支分工：** `custom/all-in-one`（默认分支）为日常自用的全特性合体分支；`mcp` 与上游 [`kunkundi/crossdesk:mcp`](https://github.com/kunkundi/crossdesk) 严格保持 `1:1` 同步；其余 `fix/*`、`feat/*` 分支保持单一职责以跟踪上游 PR。
+- **安装与升级：** Windows 安装包（`.exe`）支持在官方原版之上直接覆盖升级，完整保留设备 ID、连接密码与自建中继服务配置；Android 增强版 APK 采用独立签名，若设备已安装官方原版签名 APK，首次切换请先卸载旧版再安装，后续同源版本可直接覆盖升级。
 
 ## 特别赞助
 
@@ -68,7 +95,8 @@ CrossDesk 让你从电脑、浏览器、手机或终端（桌面 CLI）连接远
 
 ## 下载与平台支持
 
-从 [官方网站](https://www.crossdesk.cn/) 或 [GitHub Releases](https://github.com/kunkundi/crossdesk/releases) 下载与你的系统和 CPU 架构匹配的安装包；也可直接打开 [Web 客户端](https://web.crossdesk.cn/)。
+- **下载本仓库全特性增强版：** 前往 [**NandaNg314/crossdesk Releases**](https://github.com/NandaNg314/crossdesk/releases) 下载集成上述修复与 Android 触控定制的安装包。
+- **下载官方上游原版：** 从 [官方网站](https://www.crossdesk.cn/) 或 [上游 GitHub Releases](https://github.com/kunkundi/crossdesk/releases) 下载与你的系统和 CPU 架构匹配的安装包；也可直接打开 [Web 客户端](https://web.crossdesk.cn/)。
 
 | 平台 | 支持范围与安装要求 |
 | --- | --- |
@@ -373,9 +401,9 @@ PC 端可控制和被控制，复用桌面界面与桌面墙；手机和平板�
 
 感谢 [HelloGitHub](https://hellogithub.com/)、[阮一峰的科技爱好者周刊](https://github.com/ruanyf/weekly) 与 [LinuxDo](https://linux.do) 社区的推荐、交流与支持。
 
-Copyright (c) 2026 JUNKUN DI.
+Copyright (c) 2026 JUNKUN DI. Fork 增强修改部分由 [NandaNg314](https://github.com/NandaNg314/crossdesk) 基于相同开源协议维护发布。
 
-CrossDesk 使用 [GPL-3.0-only](LICENSE) 许可。隐私说明见 [隐私政策](PRIVACY.md#中文)。
+CrossDesk 及本 Fork 修改版本均遵循 [GPL-3.0-only](LICENSE) 许可。隐私说明见 [隐私政策](PRIVACY.md#中文)。
 
 ### Code signing policy
 
