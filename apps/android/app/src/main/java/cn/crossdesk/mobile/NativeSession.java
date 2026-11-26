@@ -54,7 +54,7 @@ final class NativeSession implements AutoCloseable {
     private final int port;
     private long handle;
     private boolean signalReady, joining, started;
-    private volatile boolean connected, supportsTextInput;
+    private volatile boolean connected, supportsTextInput, remoteServiceAvailable;
     final RemotePrivacyScreen privacyScreen = new RemotePrivacyScreen();
     private int signalState;
     private volatile long signalGeneration;
@@ -238,6 +238,7 @@ final class NativeSession implements AutoCloseable {
                             listener.privacyChanged();
                         } else if(event.optInt("type",-1)==5){
                             JSONObject service=event.optJSONObject("service_status");
+                            remoteServiceAvailable=service!=null&&service.optBoolean("available",false);
                             privacyScreen.setInteractiveStage(service==null?"":service.optString("interactive_stage",""));
                             listener.privacyChanged();
                         }
@@ -298,14 +299,22 @@ final class NativeSession implements AutoCloseable {
     }
     void surface(Surface value) { execute(() -> { surface = value; if (handle != 0) nSurface(handle, value); }); }
     void pointer(float x, float y, int flag, int wheel) { execute(() -> { if (connected) nPointer(handle, x, y, flag, wheel); }); }
-    void key(int code, boolean down) { execute(() -> { if (connected) nKey(handle, code, down); }); }
+    void key(int code, boolean down) {
+        int normalized = KeyCatalog.normalizeVk(code);
+        if (normalized <= 0) return;
+        execute(() -> { if (connected) nKey(handle, normalized, down); });
+    }
     void chord(int code,int[] modifiers) {
         if(closed||!connected)return;
-        int[] keys=RemoteShortcuts.normalize(modifiers);
+        int[] keys=KeyCatalog.normalizeModifiers(modifiers);
+        int mainKey=KeyCatalog.normalizeVk(code);
+        if(mainKey<=0&&keys.length==0)return;
         execute(()->{
             if(!connected)return;
-            try{for(int modifier:keys)nKey(handle,modifier,true);nKey(handle,code,true);}
-            finally{nKey(handle,code,false);for(int i=keys.length-1;i>=0;i--)nKey(handle,keys[i],false);}
+            boolean pressMain = mainKey > 0;
+            for (int m : keys) if (m == mainKey) pressMain = false;
+            try{for(int modifier:keys)nKey(handle,modifier,true);if(pressMain)nKey(handle,mainKey,true);}
+            finally{if(pressMain)nKey(handle,mainKey,false);for(int i=keys.length-1;i>=0;i--)nKey(handle,keys[i],false);}
         });
     }
     boolean textEdit(int deletions,String text) {
@@ -320,7 +329,7 @@ final class NativeSession implements AutoCloseable {
             if(unicode){if(bytes.length>0)nText(handle,bytes);}
             else for(char ch:text.toCharArray()){
                 int code=KeyMap.ascii(ch);boolean shift=(code&0x100)!=0;
-                if(shift)nKey(handle,16,true);nKey(handle,code&255,true);nKey(handle,code&255,false);if(shift)nKey(handle,16,false);
+                if(shift)nKey(handle,KeyCatalog.VK_LSHIFT,true);nKey(handle,code&255,true);nKey(handle,code&255,false);if(shift)nKey(handle,KeyCatalog.VK_LSHIFT,false);
             }
         });
         return true;
@@ -348,10 +357,77 @@ final class NativeSession implements AutoCloseable {
             ui(() -> listener.controlFeedback(sent ? L10n.tr("已发送，请在远端粘贴") : L10n.tr("指令发送失败，请重试")));
         });
     }
+    void pasteClipboardText(String text, String platform) {
+        pasteClipboardText(text, platform, false);
+    }
+    void pasteClipboardText(String text, String platform, boolean terminalShiftInsert) {
+        if (closed || !connected) return;
+        if (text == null || text.isEmpty()) {
+            ui(() -> listener.controlFeedback(L10n.tr("剪贴板中没有文本")));
+            return;
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAX_CLIPBOARD_BYTES) {
+            ui(() -> listener.controlFeedback(L10n.tr("文本超过 128 KB")));
+            return;
+        }
+        if (text.indexOf('\0') >= 0) {
+            ui(() -> listener.controlFeedback(L10n.tr("指令发送失败，请重试")));
+            return;
+        }
+        boolean mac = "macos".equals(platform);
+        execute(() -> {
+            boolean sent = connected && handle != 0 && nClipboard(handle, bytes);
+            if (sent && connected && handle != 0) {
+                // Separate SCTP streams carry clipboard and keyboard; let clipboard arrive before paste chord.
+                try { Thread.sleep(25); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                if (!closed && connected && handle != 0) {
+                    int mod = terminalShiftInsert ? KeyCatalog.VK_LSHIFT : (mac ? KeyCatalog.VK_LWIN : KeyCatalog.VK_LCONTROL);
+                    int key = terminalShiftInsert ? KeyCatalog.VK_INSERT : 'V';
+                    try {
+                        nKey(handle, mod, true);
+                        nKey(handle, key, true);
+                    } finally {
+                        nKey(handle, key, false);
+                        nKey(handle, mod, false);
+                    }
+                }
+            }
+            ui(() -> listener.controlFeedback(sent ? L10n.tr("已同步剪贴板并粘贴") : L10n.tr("指令发送失败，请重试")));
+        });
+    }
     void secureAttention(){execute(()->{
         boolean sent=connected&&nSecureAttention(handle);
         ui(()->listener.controlFeedback(sent?L10n.tr("已发送 Ctrl+Alt+Del"):L10n.tr("指令发送失败，请重试")));
     });}
+    void lockWorkstation(String platform) {
+        if (closed || !connected) return;
+        boolean mac = "macos".equals(platform);
+        boolean win = "windows".equals(platform) || platform == null || platform.isEmpty() || "unknown".equals(platform);
+        execute(() -> {
+            if (!connected || handle == 0) return;
+            boolean sentViaService = false;
+            if (win && remoteServiceAvailable) {
+                try {
+                    sentViaService = nLockWorkstation(handle);
+                } catch (UnsatisfiedLinkError ignored) {
+                    // Prebuilt local .so may predate nLockWorkstation; fall back to chord below.
+                }
+            }
+            if (!sentViaService) {
+                int[] mods = mac ? new int[]{KeyCatalog.VK_LCONTROL, KeyCatalog.VK_LWIN} : new int[]{KeyCatalog.VK_LWIN};
+                int key = mac ? 'Q' : 'L';
+                try {
+                    for (int m : mods) nKey(handle, m, true);
+                    nKey(handle, key, true);
+                } finally {
+                    nKey(handle, key, false);
+                    for (int i = mods.length - 1; i >= 0; i--) nKey(handle, mods[i], false);
+                }
+            }
+            ui(() -> listener.controlFeedback(L10n.tr("已发送锁屏指令")));
+        });
+    }
     void sendFile(android.net.Uri uri){
         if(closed)return;
         if(sendingFile){listener.controlFeedback(L10n.tr("请等待当前文件发送完成"));return;}
@@ -400,6 +476,7 @@ final class NativeSession implements AutoCloseable {
     private static native boolean nPresenceRequest(long handle,byte[] data);
     private static native boolean nClipboard(long handle, byte[] data);
     private static native boolean nSecureAttention(long handle);
+    private static native boolean nLockWorkstation(long handle);
     private static native boolean nPrivacy(long handle,int flag,boolean blockLocalInput);
     private static native void nFileDirectory(long handle,String directory);
     private static native boolean nSendFile(long handle,String path,byte[] name);

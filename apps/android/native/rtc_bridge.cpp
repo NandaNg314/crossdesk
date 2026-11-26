@@ -491,6 +491,12 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nSecureAttention)(JNIEnv*, jcla
   const auto data = android_controller::SecureAttentionMessage();
   return MiniRtcSendReliableDataFrame(s->controller, data.data(), data.size(), kControlStream) == 0;
 }
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nLockWorkstation)(JNIEnv*, jclass, jlong handle) {
+  auto* s = From(handle);
+  if (!s || !s->controller || s->stopping) return false;
+  const auto data = android_controller::LockWorkstationMessage();
+  return MiniRtcSendReliableDataFrame(s->controller, data.data(), data.size(), kControlStream) == 0;
+}
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nPrivacy)(
     JNIEnv*, jclass, jlong handle, jint flag, jboolean block_input) {
   auto* s = From(handle);

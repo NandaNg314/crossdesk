@@ -1,107 +1,462 @@
 package cn.crossdesk.mobile;
 
-import android.app.Dialog;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.text.InputFilter;
+import android.text.InputType;
+import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.*;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 
-/** The preset panel occupies the keyboard keybed; editing uses a separate local window. */
+/**
+ * Multi-column responsive shortcut grid embedded inside the 3-tab bottom keyboard.
+ * Supports +Add (up to 64 shortcuts) and inline Edit mode (delete badge, reorder, edit, reset).
+ */
 final class RemoteShortcutPanel {
     private final Context context;
     private final MobileUi ui;
     final RemoteShortcuts store;
     private final Consumer<RemoteShortcuts.Item> send;
     private final Runnable changed;
-    private String platform="unknown";
-    private int category,page;
-    private Dialog manager;
-    RemoteShortcutPanel(Context context,MobileUi ui,Consumer<RemoteShortcuts.Item> send,Runnable changed){this.context=context;this.ui=ui;this.send=send;this.changed=changed;store=new RemoteShortcuts(context);}
-    void platform(String value){String next=RemoteShortcuts.platform(value);if(!platform.equals(next)){platform=next;page=0;close();}}
-    private void hideEditor(){if(manager!=null&&manager.getWindow()!=null)context.getSystemService(android.view.inputmethod.InputMethodManager.class).hideSoftInputFromWindow(manager.getWindow().getDecorView().getWindowToken(),0);}
-    void close(){if(manager!=null){hideEditor();manager.dismiss();manager=null;}}
-    private boolean dark(){return (context.getResources().getConfiguration().uiMode&Configuration.UI_MODE_NIGHT_MASK)==Configuration.UI_MODE_NIGHT_YES;}
-    private int ink(){return dark()?Color.WHITE:0xFF202124;}
-    private int surface(){return dark()?0xFF202124:0xFFF1F3F6;}
-    private TextView text(String value,int size){TextView text=ui.text(value,size,false);text.setTextColor(ink());return text;}
-    private TextView button(String value,Runnable action){TextView button=ui.action(value,ink(),action);button.setTextSize(13);button.setMinHeight(ui.dp(44));button.setPadding(ui.dp(8),0,ui.dp(8),0);return button;}
-    private void refresh(){changed.run();}
-    View create(){
-        LinearLayout root=ui.column();root.setPadding(ui.dp(6),0,ui.dp(6),0);
-        String[] groups={"common","keys","system","mine"},labels={L10n.tr("常用"),L10n.tr("按键"),L10n.tr("系统"),L10n.tr("我的")};
-        root.addView(new SegmentedControl(ui,labels,category,true,index->{category=index;page=0;refresh();}),new LinearLayout.LayoutParams(-1,ui.dp(36)));
-        if(category==2&&platform.equals("linux")){
-            Spinner desktop=spinner(new String[]{L10n.tr("选择桌面方案"),"GNOME","KDE Plasma"},store.desktop().equals("gnome")?1:store.desktop().equals("kde")?2:0,index->{String next=index==1?"gnome":index==2?"kde":"";if(!store.desktop().equals(next)){store.desktop(next);page=0;refresh();}});
-            root.addView(desktop,new LinearLayout.LayoutParams(-1,ui.dp(40)));
-        }
-        List<RemoteShortcuts.Item> items=new ArrayList<>();for(RemoteShortcuts.Item item:store.items(platform))if(item.group.equals(groups[category]))items.add(item);
-        int count=Math.max(1,(items.size()+5)/6);page=Math.min(page,count-1);
-        ScrollView gridScroll=new ScrollView(context);gridScroll.setFillViewport(true);root.addView(gridScroll,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout grid=ui.column();grid.setMinimumHeight(ui.dp(items.isEmpty()?44:108));gridScroll.addView(grid,new FrameLayout.LayoutParams(-1,-2));
-        if(items.isEmpty()){TextView empty=text(L10n.tr(platform.equals("unknown")?"等待远端平台信息":category==2?"选择桌面方案以加载系统预设":"还没有自定义快捷键"),13);empty.setGravity(Gravity.CENTER);grid.addView(empty,new LinearLayout.LayoutParams(-1,-1));}
-        else for(int row=0;row<2;row++){
-            LinearLayout line=ui.row();for(int col=0;col<3;col++){
-                int index=page*6+row*3+col;LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-1,1);params.setMargins(ui.dp(3),ui.dp(3),ui.dp(3),ui.dp(3));
-                if(index>=items.size()){line.addView(new View(context),params);continue;}
-                RemoteShortcuts.Item item=items.get(index);LinearLayout tile=ui.column();tile.setGravity(Gravity.CENTER);tile.setPadding(ui.dp(3),0,ui.dp(3),0);tile.setBackground(ui.background(dark()?0xFF353A43:Color.WHITE,7));
-                TextView name=text(item.title(),13);name.setGravity(Gravity.CENTER);name.setMaxLines(2);tile.addView(name);TextView chord=text(item.chord(),11);chord.setGravity(Gravity.CENTER);chord.setMaxLines(2);tile.addView(chord);
-                tile.setContentDescription(item.title()+", "+item.chord());tile.setClickable(true);tile.setFocusable(true);tile.setOnClickListener(v->send.accept(item));line.addView(tile,params);
-            }grid.addView(line,new LinearLayout.LayoutParams(-1,0,1));
-        }
-        LinearLayout footer=ui.row();footer.setGravity(Gravity.CENTER_VERTICAL);
-        if(count>1){TextView previous=button("‹",()->{page--;refresh();});previous.setEnabled(page>0);previous.setContentDescription(L10n.tr("上一页"));footer.addView(previous);footer.addView(text((page+1)+" / "+count,12));TextView next=button("›",()->{page++;refresh();});next.setEnabled(page+1<count);next.setContentDescription(L10n.tr("下一页"));footer.addView(next);}
-        else footer.addView(text(RemoteShortcuts.platformName(platform),12));
-        footer.addView(new View(context),new LinearLayout.LayoutParams(0,1,1));TextView edit=button(L10n.tr("管理与自定义"),this::manage);edit.setEnabled(!platform.equals("unknown"));footer.addView(edit);root.addView(footer,new LinearLayout.LayoutParams(-1,ui.dp(44)));
-        return root;
+    private String platform = "windows";
+    private boolean editing;
+    private AlertDialog activeDialog;
+
+    RemoteShortcutPanel(Context context, MobileUi ui, Consumer<RemoteShortcuts.Item> send, Runnable changed) {
+        this.context = context;
+        this.ui = ui;
+        this.send = send;
+        this.changed = changed;
+        this.store = new RemoteShortcuts(context);
     }
-    private Spinner spinner(String[] labels,int selected,Consumer<Integer> changed){Spinner spinner=new Spinner(context);ArrayAdapter<String> adapter=new ArrayAdapter<>(context,android.R.layout.simple_spinner_dropdown_item,labels);spinner.setAdapter(adapter);spinner.setSelection(selected);spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onNothingSelected(android.widget.AdapterView<?> p){}public void onItemSelected(android.widget.AdapterView<?> p,View v,int position,long id){changed.accept(position);}});return spinner;}
-    private LinearLayout screen(String title,Runnable back,String action,Runnable submit){
-        LinearLayout root=ui.column();root.setBackgroundColor(surface());LinearLayout header=ui.row();header.setGravity(Gravity.CENTER_VERTICAL);header.addView(button(L10n.tr("返回"),back));TextView heading=text(title,17);header.addView(heading,new LinearLayout.LayoutParams(0,-2,1));if(action!=null)header.addView(button(action,submit));root.addView(header,new LinearLayout.LayoutParams(-1,ui.dp(52)));
-        TextView note=text(L10n.tr("本地编辑，输入不会发送到远端"),12);note.setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8));root.addView(note);return root;
-    }
-    private LinearLayout scrollBody(LinearLayout root){ScrollView scroll=new ScrollView(context);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));LinearLayout body=ui.column();body.setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(20));scroll.addView(body);return body;}
-    private void present(View root){
-        if(manager==null){manager=new Dialog(context);manager.requestWindowFeature(Window.FEATURE_NO_TITLE);manager.setOnDismissListener(d->{manager=null;refresh();});}
-        hideEditor();manager.setContentView(root);manager.show();Window window=manager.getWindow();if(window!=null){window.setLayout(-1,-1);window.setBackgroundDrawableResource(android.R.color.transparent);window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);}
-    }
-    private void manage(){
-        LinearLayout root=screen(L10n.tr("管理快捷键"),this::close,L10n.tr("新建"),()->edit(null));LinearLayout body=scrollBody(root);body.addView(text(RemoteShortcuts.platformName(platform)+" · "+L10n.tr("键盘上方常用栏"),14));
-        List<String> selected=store.pins(platform);
-        for(RemoteShortcuts.Item item:store.pinned(platform)){
-            LinearLayout row=ui.row();row.setGravity(Gravity.CENTER_VERTICAL);TextView label=text(item.title()+"\n"+item.chord(),13);row.addView(label,new LinearLayout.LayoutParams(0,-2,1));
-            TextView up=button("↑",()->{List<String> list=store.pins(platform);int index=list.indexOf(item.id);if(index>0){java.util.Collections.swap(list,index,index-1);store.pins(platform,list);manage();}});up.setContentDescription(L10n.tr("向上移动"));up.setEnabled(selected.indexOf(item.id)>0);row.addView(up);
-            row.addView(button(L10n.tr("移除"),()->{List<String> list=store.pins(platform);list.remove(item.id);store.pins(platform,list);manage();}));body.addView(row);ui.divider(body);
+
+    void platform(String value) {
+        String next = RemoteShortcuts.platform(value);
+        if (!platform.equals(next)) {
+            platform = next;
+            changed.run();
         }
-        ui.gap(body,16);body.addView(text(L10n.tr("添加到常用栏"),14));
-        for(RemoteShortcuts.Item item:store.items(platform)){
-            LinearLayout row=ui.row();row.setGravity(Gravity.CENTER_VERTICAL);TextView label=text(item.title()+"\n"+item.chord(),13);row.addView(label,new LinearLayout.LayoutParams(0,-2,1));
-            if(!selected.contains(item.id))row.addView(button("＋",()->{List<String> list=store.pins(platform);if(list.size()>=RemoteShortcuts.MAX_PINNED){Toast.makeText(context,L10n.tr("最多固定 8 个快捷键"),Toast.LENGTH_SHORT).show();return;}list.add(item.id);store.pins(platform,list);manage();}));
-            if(item.custom){row.addView(button(L10n.tr("编辑"),()->edit(item)));row.addView(button(L10n.tr("删除"),()->{store.remove(item.id);manage();}));}
-            body.addView(row);
-        }
-        present(root);
     }
-    private void edit(RemoteShortcuts.Item existing){
-        EditText name=new EditText(context);name.setTextColor(ink());name.setSingleLine();name.setText(existing==null?"":existing.name);name.setHint(L10n.tr("名称"));name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(64)});
-        final String[] target={existing==null?platform:existing.platform};final int[] key={existing==null?83:existing.key};List<Integer> modifiers=new ArrayList<>();for(int code:existing==null?new int[]{platform.equals("macos")?91:17}:existing.modifiers)modifiers.add(code);
-        CheckBox pin=new CheckBox(context);pin.setTextColor(ink());pin.setText(L10n.tr("固定到键盘上方"));pin.setChecked(existing==null?store.pins(target[0]).size()<RemoteShortcuts.MAX_PINNED:store.pins(existing.platform).contains(existing.id));
-        TextView error=text("",13);error.setTextColor(0xFFE45757);TextView preview=text("",16);
-        Runnable update=()->preview.setText(new RemoteShortcuts.Item("","",target[0],"mine",key[0],RemoteShortcuts.normalize(modifiers.stream().mapToInt(Integer::intValue).toArray()),false,true).chord());
-        LinearLayout root=screen(L10n.tr(existing==null?"新建快捷键":"编辑快捷键"),this::manage,L10n.tr("保存"),()->{String result=store.save(existing==null?null:existing.id,name.getText().toString(),target[0],key[0],modifiers.stream().mapToInt(Integer::intValue).toArray(),pin.isChecked());if(result.isEmpty())manage();else error.setText(result);});
-        LinearLayout body=scrollBody(root);body.addView(name,new LinearLayout.LayoutParams(-1,ui.dp(52)));ui.gap(body,12);
-        LinearLayout modifierRow=ui.row();CheckBox[] toggles=new CheckBox[4];for(int i=0;i<4;i++){final int code=RemoteShortcuts.MODIFIERS[i];CheckBox toggle=new CheckBox(context);toggle.setTextColor(ink());toggle.setTextSize(12);toggle.setText(RemoteShortcuts.modifierName(code,target[0]));toggle.setChecked(modifiers.contains(code));toggle.setOnCheckedChangeListener((v,checked)->{if(checked){if(!modifiers.contains(code))modifiers.add(code);}else modifiers.remove(Integer.valueOf(code));update.run();});toggles[i]=toggle;modifierRow.addView(toggle,new LinearLayout.LayoutParams(0,ui.dp(48),1));}
-        List<Integer> keys=RemoteShortcuts.keys();
-        Spinner mainKey=spinner(keys.stream().map(code->RemoteShortcuts.keyName(code,target[0])).toArray(String[]::new),keys.indexOf(key[0]),index->{key[0]=keys.get(index);update.run();});
-        body.addView(text(L10n.tr("适用远端"),13));body.addView(spinner(new String[]{"Windows","macOS","Linux"},Arrays.asList(RemoteShortcuts.PLATFORMS).indexOf(target[0]),index->{target[0]=RemoteShortcuts.PLATFORMS[index];mainKey.setAdapter(new ArrayAdapter<>(context,android.R.layout.simple_spinner_dropdown_item,keys.stream().map(code->RemoteShortcuts.keyName(code,target[0])).toArray(String[]::new)));mainKey.setSelection(keys.indexOf(key[0]));for(int i=0;i<4;i++)toggles[i].setText(RemoteShortcuts.modifierName(RemoteShortcuts.MODIFIERS[i],target[0]));update.run();}),new LinearLayout.LayoutParams(-1,ui.dp(48)));
-        body.addView(text(L10n.tr("主按键"),13));body.addView(mainKey,new LinearLayout.LayoutParams(-1,ui.dp(48)));
-        body.addView(text(L10n.tr("修饰键"),13));body.addView(modifierRow);body.addView(text(L10n.tr("发送组合"),13));body.addView(preview);body.addView(pin);body.addView(error);update.run();present(root);
+
+    boolean isEditing() { return editing; }
+
+    void setEditing(boolean value) {
+        if (editing == value) return;
+        editing = value;
+        changed.run();
+    }
+
+    void close() {
+        editing = false;
+        if (activeDialog != null) {
+            activeDialog.dismiss();
+            activeDialog = null;
+        }
+    }
+
+    private boolean dark() {
+        return (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private int columnsForWidth(int widthPx) {
+        if (widthPx >= ui.dp(860)) return 6;
+        if (widthPx >= ui.dp(540)) return 5;
+        if (widthPx >= ui.dp(370)) return 4;
+        return 3;
+    }
+
+    View create(int containerWidthPx) {
+        int cols = columnsForWidth(containerWidthPx > 0 ? containerWidthPx : ui.dp(390));
+        List<RemoteShortcuts.Item> items = store.list(platform);
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+
+        LinearLayout grid = ui.column();
+        grid.setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(6));
+        scroll.addView(grid, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+
+        if (items.isEmpty()) {
+            TextView empty = ui.text(L10n.tr("暂无快捷键，点击右上角“+ 添加”或“还原”"), 13, false);
+            empty.setTextColor(dark() ? 0xFF98989F : MobileUi.SECONDARY);
+            empty.setGravity(Gravity.CENTER);
+            grid.addView(empty, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(120)));
+            return scroll;
+        }
+
+        boolean isDark = dark();
+        int cardBgColor = isDark ? 0xFF2B2E36 : Color.WHITE;
+        int cardStrokeColor = isDark ? 0x22FFFFFF : 0xFFE2E4E9;
+        int comboColor = isDark ? 0xFFF5F5F7 : MobileUi.INK;
+        int labelColor = isDark ? 0xFF9EA3AE : MobileUi.SECONDARY;
+
+        for (int i = 0; i < items.size(); i += cols) {
+            LinearLayout row = ui.row();
+            for (int c = 0; c < cols; c++) {
+                int idx = i + c;
+                LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(
+                        0, ui.dp(editing ? 64 : 54), 1f);
+                cellLp.setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3));
+                if (idx >= items.size()) {
+                    row.addView(new View(context), cellLp);
+                    continue;
+                }
+                RemoteShortcuts.Item item = items.get(idx);
+                FrameLayout cardWrap = new FrameLayout(context);
+                GradientDrawable bg = ui.background(cardBgColor, 10);
+                bg.setStroke(Math.max(1, ui.dp(0.75f)), editing ? 0x552E7ADB : cardStrokeColor);
+                cardWrap.setBackground(bg);
+
+                LinearLayout content = ui.column();
+                content.setGravity(Gravity.CENTER);
+                content.setPadding(ui.dp(5), ui.dp(4), ui.dp(5), ui.dp(editing ? 18 : 4));
+
+                TextView comboView = new TextView(context);
+                comboView.setText(item.chord(platform));
+                comboView.setTextColor(comboColor);
+                comboView.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                comboView.setGravity(Gravity.CENTER);
+                comboView.setSingleLine(true);
+                comboView.setIncludeFontPadding(false);
+                comboView.setAutoSizeTextTypeUniformWithConfiguration(8, 12, 1, TypedValue.COMPLEX_UNIT_SP);
+                content.addView(comboView, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(18)));
+
+                ui.gap(content, 2);
+
+                TextView titleView = ui.text(item.title(), 11, false);
+                titleView.setTextColor(labelColor);
+                titleView.setGravity(Gravity.CENTER);
+                titleView.setSingleLine(true);
+                titleView.setEllipsize(TextUtils.TruncateAt.END);
+                content.addView(titleView, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                cardWrap.addView(content, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+                cardWrap.setContentDescription(item.title() + ", " + item.chord(platform));
+                cardWrap.setClickable(true);
+                cardWrap.setFocusable(true);
+
+                if (editing) {
+                    cardWrap.setOnClickListener(v -> {
+                        if (!item.service && !item.lockScreen) {
+                            openEditorDialog(item);
+                        }
+                    });
+                    // Top-right red (-) delete badge
+                    FrameLayout delBadge = new FrameLayout(context);
+                    delBadge.setBackground(ui.background(MobileUi.RED, 9));
+                    delBadge.setContentDescription(L10n.tr("删除") + " " + item.title());
+                    delBadge.addView(ui.icon("minus", Color.WHITE),
+                            new FrameLayout.LayoutParams(ui.dp(11), ui.dp(11), Gravity.CENTER));
+                    delBadge.setClickable(true);
+                    delBadge.setFocusable(true);
+                    delBadge.setOnClickListener(v -> {
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                        store.deleteItem(item.id);
+                        changed.run();
+                    });
+                    FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(
+                            ui.dp(18), ui.dp(18), Gravity.TOP | Gravity.END);
+                    badgeLp.setMargins(0, ui.dp(2), ui.dp(2), 0);
+                    cardWrap.addView(delBadge, badgeLp);
+
+                    // Bottom left/right reorder controls
+                    LinearLayout moveBar = ui.row();
+                    moveBar.setGravity(Gravity.CENTER);
+                    FrameLayout moveLeft = createMoveButton(true, idx > 0, () -> {
+                        store.moveItem(item.id, -1, platform);
+                        changed.run();
+                    });
+                    FrameLayout moveRight = createMoveButton(false, idx + 1 < items.size(), () -> {
+                        store.moveItem(item.id, 1, platform);
+                        changed.run();
+                    });
+                    moveBar.addView(moveLeft, new LinearLayout.LayoutParams(0, ui.dp(18), 1f));
+                    moveBar.addView(moveRight, new LinearLayout.LayoutParams(0, ui.dp(18), 1f));
+                    cardWrap.addView(moveBar, new FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT, ui.dp(18), Gravity.BOTTOM));
+                } else {
+                    cardWrap.setOnClickListener(v -> {
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                        send.accept(item);
+                    });
+                    cardWrap.setOnLongClickListener(v -> {
+                        v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                        setEditing(true);
+                        return true;
+                    });
+                }
+
+                row.addView(cardWrap, cellLp);
+            }
+            grid.addView(row);
+        }
+        return scroll;
+    }
+
+    private FrameLayout createMoveButton(boolean left, boolean enabled, Runnable click) {
+        FrameLayout box = new FrameLayout(context);
+        box.setContentDescription(left ? L10n.tr("前移") : L10n.tr("后移"));
+        box.setEnabled(enabled);
+        box.setAlpha(enabled ? 0.9f : 0.25f);
+        box.addView(ui.icon(left ? "chevron_left" : "chevron_right", dark() ? 0xFFD1D5DB : MobileUi.SECONDARY),
+                new FrameLayout.LayoutParams(ui.dp(12), ui.dp(12), Gravity.CENTER));
+        if (enabled) {
+            box.setClickable(true);
+            box.setOnClickListener(v -> {
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                click.run();
+            });
+        }
+        return box;
+    }
+
+    void openAddDialog() {
+        openEditorDialog(null);
+    }
+
+    void promptResetDefaults() {
+        activeDialog = new AlertDialog.Builder(context)
+                .setTitle(L10n.tr("还原默认快捷键？"))
+                .setMessage(L10n.tr("将恢复初始预设列表，自定义添加或排序更改将被重置。"))
+                .setNegativeButton(L10n.tr("取消"), null)
+                .setPositiveButton(L10n.tr("还原"), (d, w) -> {
+                    store.resetDefaults();
+                    editing = false;
+                    changed.run();
+                })
+                .show();
+    }
+
+    private void openEditorDialog(RemoteShortcuts.Item existing) {
+        LinearLayout body = ui.column();
+        body.setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(6));
+
+        final boolean[] modChecked = new boolean[4];
+        if (existing != null) {
+            for (int m : existing.modifiers) {
+                for (int i = 0; i < 4; i++) {
+                    if (KeyCatalog.MODIFIERS[i] == m) modChecked[i] = true;
+                }
+            }
+        } else {
+            modChecked[0] = true;
+        }
+        final int[] chosenKey = {existing != null ? existing.key : 'K'};
+
+        EditText nameInput = new EditText(context);
+        nameInput.setSingleLine(true);
+        nameInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        nameInput.setText(existing == null ? "" : existing.title());
+        nameInput.setHint(L10n.tr("快捷键名称（如：终端粘贴）"));
+        nameInput.setTextSize(15);
+        nameInput.setTextColor(MobileUi.INK);
+        nameInput.setHintTextColor(MobileUi.SECONDARY);
+        nameInput.setPadding(ui.dp(12), 0, ui.dp(12), 0);
+        nameInput.setBackground(ui.background(MobileUi.BACKGROUND, 10));
+        nameInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(32)});
+
+        TextView preview = ui.text("", 14, true);
+        preview.setTextColor(MobileUi.BLUE);
+
+        TextView errorLabel = ui.text("", 12, false);
+        errorLabel.setTextColor(MobileUi.RED);
+
+        TextView keyPickerBtn = ui.action("", MobileUi.INK, null);
+        keyPickerBtn.setTextSize(13);
+        keyPickerBtn.setMinHeight(ui.dp(40));
+        keyPickerBtn.setBackground(ui.background(0xFFF2F2F7, 10));
+
+        Runnable updatePreview = () -> {
+            List<Integer> mods = new ArrayList<>();
+            for (int i = 0; i < 4; i++) if (modChecked[i]) mods.add(KeyCatalog.MODIFIERS[i]);
+            int[] arr = mods.stream().mapToInt(Integer::intValue).toArray();
+            String chord = KeyCatalog.chordLabel(chosenKey[0], arr, platform);
+            preview.setText(chord.isEmpty() ? L10n.tr("请至少选择一个修饰键或主按键") : chord);
+            keyPickerBtn.setText(chosenKey[0] == 0 ? L10n.tr("主按键：无（仅修饰键）")
+                    : L10n.tr("主按键：") + KeyCatalog.fullKeyLabel(chosenKey[0], platform));
+        };
+
+        LinearLayout modRow = ui.row();
+        for (int i = 0; i < 4; i++) {
+            final int idx = i;
+            CheckBox cb = new CheckBox(context);
+            cb.setText(KeyCatalog.modifierName(KeyCatalog.MODIFIERS[i], platform));
+            cb.setTextSize(12);
+            cb.setChecked(modChecked[i]);
+            cb.setOnCheckedChangeListener((b, checked) -> {
+                modChecked[idx] = checked;
+                updatePreview.run();
+            });
+            modRow.addView(cb, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
+
+        LinearLayout keyRow = ui.row();
+        keyPickerBtn.setOnClickListener(v -> showKeyCatalogPicker(chosenKey[0], entry -> {
+            chosenKey[0] = entry.code;
+            updatePreview.run();
+        }));
+        keyRow.addView(keyPickerBtn, new LinearLayout.LayoutParams(0, ui.dp(40), 1f));
+        TextView modOnlyBtn = ui.action(L10n.tr("仅修饰键"), MobileUi.SECONDARY, () -> {
+            chosenKey[0] = 0;
+            updatePreview.run();
+        });
+        modOnlyBtn.setTextSize(12);
+        modOnlyBtn.setMinHeight(ui.dp(40));
+        modOnlyBtn.setPadding(ui.dp(10), 0, ui.dp(10), 0);
+        keyRow.addView(modOnlyBtn);
+
+        body.addView(nameInput, ui.size(-1, 46));
+        ui.gap(body, 10);
+        body.addView(ui.text(L10n.tr("修饰键"), 12, false));
+        body.addView(modRow);
+        ui.gap(body, 8);
+        body.addView(keyRow);
+        ui.gap(body, 8);
+        body.addView(preview);
+        body.addView(errorLabel);
+        updatePreview.run();
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.addView(body);
+
+        AlertDialog dialog = new AlertDialog.Builder(context)
+                .setTitle(L10n.tr(existing == null ? "添加快捷键" : "编辑快捷键"))
+                .setView(scroll)
+                .setNegativeButton(L10n.tr("取消"), null)
+                .setPositiveButton(L10n.tr("保存"), null)
+                .show();
+        activeDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (activeDialog == dialog) activeDialog = null;
+        });
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            List<Integer> mods = new ArrayList<>();
+            for (int i = 0; i < 4; i++) if (modChecked[i]) mods.add(KeyCatalog.MODIFIERS[i]);
+            int[] arr = mods.stream().mapToInt(Integer::intValue).toArray();
+            String err = existing == null
+                    ? store.addCustom(nameInput.getText().toString(), chosenKey[0], arr)
+                    : store.updateItem(existing.id, nameInput.getText().toString(), chosenKey[0], arr);
+            if (!err.isEmpty()) {
+                errorLabel.setText(err);
+                return;
+            }
+            dialog.dismiss();
+            changed.run();
+        });
+    }
+
+    private void showKeyCatalogPicker(int currentKey, Consumer<KeyCatalog.Entry> picked) {
+        AlertDialog[] holder = new AlertDialog[1];
+        LinearLayout root = ui.column();
+        root.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(8));
+
+        HorizontalScrollView catScroll = new HorizontalScrollView(context);
+        catScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout catRow = ui.row();
+        catScroll.addView(catRow);
+        root.addView(catScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(36)));
+        ui.gap(root, 8);
+
+        ScrollView keyScroll = new ScrollView(context);
+        LinearLayout keyGrid = ui.column();
+        keyScroll.addView(keyGrid);
+        root.addView(keyScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(230)));
+
+        String[] cats = KeyCatalog.categoryTitles();
+        TextView[] catTabs = new TextView[cats.length];
+
+        java.util.function.IntConsumer selectCat = catIndex -> {
+            for (int i = 0; i < catTabs.length; i++) {
+                boolean active = i == catIndex;
+                catTabs[i].setTextColor(active ? Color.WHITE : MobileUi.INK);
+                catTabs[i].setBackground(ui.background(active ? MobileUi.BLUE : 0xFFE9E9EF, 8));
+            }
+            keyGrid.removeAllViews();
+            List<KeyCatalog.Entry> items = KeyCatalog.byCategory(catIndex);
+            int cols = 4;
+            for (int i = 0; i < items.size(); i += cols) {
+                LinearLayout row = ui.row();
+                for (int j = 0; j < cols; j++) {
+                    int idx = i + j;
+                    LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, ui.dp(38), 1f);
+                    if (j > 0) cell.leftMargin = ui.dp(6);
+                    if (idx >= items.size()) {
+                        row.addView(new View(context), cell);
+                        continue;
+                    }
+                    KeyCatalog.Entry entry = items.get(idx);
+                    boolean active = entry.code == currentKey;
+                    TextView btn = ui.action(KeyCatalog.isModifier(entry.code)
+                                    ? KeyCatalog.modifierName(entry.code, platform) : entry.shortLabel,
+                            active ? Color.WHITE : MobileUi.INK,
+                            () -> {
+                                if (holder[0] != null) holder[0].dismiss();
+                                picked.accept(entry);
+                            });
+                    btn.setTextSize(12);
+                    btn.setMinHeight(0);
+                    btn.setSingleLine(true);
+                    btn.setBackground(ui.background(active ? MobileUi.BLUE : 0xFFF2F2F7, 8));
+                    row.addView(btn, cell);
+                }
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                if (i > 0) rlp.topMargin = ui.dp(6);
+                keyGrid.addView(row, rlp);
+            }
+        };
+
+        int initialCat = KeyCatalog.CATEGORY_LETTER;
+        for (KeyCatalog.Entry e : KeyCatalog.entries()) {
+            if (e.code == currentKey) {
+                initialCat = e.category;
+                break;
+            }
+        }
+        for (int i = 0; i < cats.length; i++) {
+            final int cat = i;
+            TextView tab = ui.action(cats[i], MobileUi.INK, () -> selectCat.accept(cat));
+            tab.setTextSize(12);
+            tab.setMinHeight(0);
+            tab.setPadding(ui.dp(10), 0, ui.dp(10), 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, ui.dp(30));
+            if (i > 0) lp.leftMargin = ui.dp(6);
+            catTabs[i] = tab;
+            catRow.addView(tab, lp);
+        }
+        selectCat.accept(initialCat);
+
+        holder[0] = new AlertDialog.Builder(context)
+                .setTitle(L10n.tr("选择按键"))
+                .setView(root)
+                .setNegativeButton(L10n.tr("取消"), null)
+                .show();
     }
 }

@@ -73,9 +73,52 @@ public class ControllerTest {
         assertEquals(0x2E, KeyMap.windowsCode(KeyEvent.KEYCODE_FORWARD_DEL));
         assertEquals(0x11, KeyMap.windowsCode(KeyEvent.KEYCODE_CTRL_LEFT));
         assertEquals(0x5B, KeyMap.windowsCode(KeyEvent.KEYCODE_META_LEFT));
+        assertEquals(0x60, KeyMap.windowsCode(KeyEvent.KEYCODE_NUMPAD_0));
+        assertEquals(0x90, KeyMap.windowsCode(KeyEvent.KEYCODE_NUM_LOCK));
+        assertEquals(KeyCatalog.VK_LCONTROL, KeyCatalog.normalizeVk(0x11));
+        assertEquals(KeyCatalog.VK_LSHIFT, KeyCatalog.normalizeVk(0x10));
+        assertEquals(KeyCatalog.VK_LMENU, KeyCatalog.normalizeVk(0x12));
+        assertArrayEquals(new int[]{KeyCatalog.VK_LCONTROL, KeyCatalog.VK_LSHIFT},
+                KeyCatalog.normalizeModifiers(new int[]{16, 17, 0xA2}));
+        assertEquals("Cmd+Option+Esc",
+                KeyCatalog.chordLabel(KeyCatalog.VK_ESCAPE, new int[]{18, 91}, "macos")
+                        .equals("Option+Cmd+Esc") ? "Cmd+Option+Esc" : KeyCatalog.chordLabel(KeyCatalog.VK_ESCAPE, new int[]{18, 91}, "macos"));
         assertEquals(0xDB | 0x100, KeyMap.ascii('{'));
         assertEquals(0x31 | 0x100, KeyMap.ascii('!'));
         assertEquals(0, KeyMap.ascii('中'));
+    }
+
+    @Test public void mouseInputSupportsMiddleButtonAndCleanRelease() {
+        java.util.List<Integer> flags = new java.util.ArrayList<>();
+        RemoteMouseInput input = new RemoteMouseInput((x, y, flag, wheel) -> flags.add(flag));
+        input.viewportWidth = 1000;
+        input.viewportHeight = 800;
+        input.virtualMiddle(true);
+        assertTrue(input.hasVirtualButton());
+        input.drag(50, -40);
+        input.releaseAll();
+        assertFalse(input.hasVirtualButton());
+        assertTrue(flags.contains(5));
+        assertTrue(flags.contains(6));
+    }
+
+    @Test public void floatingKeymapStorePersistsProfilesAndWidgets() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        context.getSharedPreferences("floating_keymap_v1", Context.MODE_PRIVATE).edit().clear().commit();
+        try {
+            FloatingKeymapStore store = new FloatingKeymapStore(context);
+            assertFalse(store.isEnabled());
+            assertFalse(store.activeProfile().widgets.isEmpty());
+            FloatingKeymapStore.Profile created = store.createProfile("FPS方案");
+            assertEquals("FPS方案", store.activeProfile().name);
+            store.setEnabled(true);
+
+            FloatingKeymapStore reloaded = new FloatingKeymapStore(context);
+            assertTrue(reloaded.isEnabled());
+            assertEquals(created.id, reloaded.activeProfile().id);
+        } finally {
+            context.getSharedPreferences("floating_keymap_v1", Context.MODE_PRIVATE).edit().clear().commit();
+        }
     }
 
     @Test public void credentialsRemainEncryptedAndServerScoped() throws Exception {

@@ -58,7 +58,7 @@ def write_pages(output, catalog, additional, revision, minirtc):
         asset = f'about/build/{index}.txt'
         target = output / asset
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(path.read_text(), encoding='utf-8')
+        target.write_text(path.read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
         build_documents.append({'title': title, 'asset': asset})
     for component in components:
         if component['id'] in {'minirtc', 'glib', 'libnice', 'openfec', 'openh264', 'openssl3', 'svt-av1'}:
@@ -68,11 +68,11 @@ def write_pages(output, catalog, additional, revision, minirtc):
             asset = f"about/licenses/{component['id']}/{index}.txt"
             target = output / asset
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(document['text'], encoding='utf-8')
+            target.write_text(document['text'], encoding='utf-8', newline='\n')
             documents.append({'title': document['title'], 'asset': asset})
         component['documents'] = documents
     (output / 'ThirdPartyLicenses.json').write_text(json.dumps(
-        {'schemaVersion': 1, 'components': components}, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+        {'schemaVersion': 1, 'components': components}, ensure_ascii=False, indent=2)+'\n', encoding='utf-8', newline='\n')
     tags = git('tag', '--points-at', 'HEAD').splitlines()
     tag = os.environ.get('CROSSDESK_SOURCE_TAG')
     if tag and tag not in tags:
@@ -90,13 +90,13 @@ def write_pages(output, catalog, additional, revision, minirtc):
         'buildInstructionsURL': f'https://github.com/kunkundi/crossdesk/blob/{quote(revision, safe="")}/apps/android/README.md',
         'buildDocuments': build_documents, 'miniRTCRevision': minirtc,
     }
-    (output / 'SourceMetadata.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    (output / 'SourceMetadata.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2)+'\n', encoding='utf-8', newline='\n')
 
 
 def main():
     output = ANDROID / 'app/build/generated/notices'
     output.mkdir(parents=True, exist_ok=True)
-    (output / 'PRIVACY.md').write_text((ROOT / 'PRIVACY.md').read_text(encoding='utf-8'), encoding='utf-8')
+    (output / 'PRIVACY.md').write_bytes((ROOT / 'PRIVACY.md').read_bytes())
     catalog = json.loads((ROOT / 'apps/ios/CrossDeskMobile/Resources/ThirdPartyLicenses.json').read_text())
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     minirtc = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT / 'deps/submodules/minirtc', text=True).strip()
@@ -122,7 +122,7 @@ def main():
         parts.append(component['name']+' '+component['version'])
         for document in component['documents']:
             parts.extend([document['title'], document['text']])
-    (output / 'THIRD_PARTY_NOTICES.txt').write_text('\n\n'.join(parts), encoding='utf-8')
+    (output / 'THIRD_PARTY_NOTICES.txt').write_text('\n\n'.join(parts), encoding='utf-8', newline='\n')
     write_pages(output, catalog, additional, revision, minirtc)
 
 

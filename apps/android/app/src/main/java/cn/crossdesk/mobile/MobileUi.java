@@ -99,6 +99,7 @@ final class MobileUi {
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG); private String name;
         Icon(Context context,String name,int color){super(context);this.name=name;paint.setColor(color);setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);}
         void setName(String value){if(name.equals(value))return;name=value;invalidate();}
+        void setColor(int color){if(paint.getColor()==color)return;paint.setColor(color);invalidate();}
         @Override protected void onDraw(Canvas c){
             c.save();c.scale(getWidth()/24f,getHeight()/24f);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(1.7f);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);
             switch(name){
@@ -118,18 +119,46 @@ final class MobileUi {
                     c.drawRoundRect(2,5,22,19,2,2,paint);path(c,3,6,12,13,21,6);break;
                 case "history":
                     c.drawArc(4,4,21,21,215,315,false,paint);path(c,3,4,3,10,9,10);path(c,12,7,12,13,16,15);break;
-                case "back":path(c,15,4,7,12,15,20);break;
+                case "back": case "chevron_left": path(c,15,5,8,12,15,19);break;
+                case "chevron_right": path(c,9,5,16,12,9,19);break;
+                case "chevron_up": path(c,5,15,12,8,19,15);break;
+                case "chevron_down": path(c,5,9,12,16,19,9);break;
                 case "refresh":c.drawArc(4,4,20,20,35,310,false,paint);path(c,20,3,20,9,14,9);break;
                 case "close":path(c,6,6,18,18);path(c,18,6,6,18);break;
+                case "plus":path(c,12,5,12,19);path(c,5,12,19,12);break;
+                case "minus":path(c,5,12,19,12);break;
                 case "arrow":path(c,4,12,20,12);path(c,14,6,20,12,14,18);break;
                 case "keyboard_hide":
                     c.drawRoundRect(2,2,22,16,2,2,paint);for(int y=6;y<=9;y+=3)for(int x=6;x<=18;x+=4)c.drawPoint(x,y,paint);c.drawLine(7,13,17,13,paint);path(c,7,20,12,23,17,20);break;
                 case "keyboard":
                     c.drawRoundRect(2,5,22,19,3,3,paint);for(int y=9;y<=12;y+=3)for(int x=6;x<=18;x+=4)c.drawPoint(x,y,paint);c.drawLine(7,16,17,16,paint);break;
                 case "display":c.drawRoundRect(2,3,22,17,2,2,paint);path(c,12,17,12,21);path(c,7,21,17,21);break;
+                case "desktop":
+                    c.drawRoundRect(2,4,22,19,2.5f,2.5f,paint);c.drawLine(2,15,22,15,paint);c.drawLine(8,19,16,19,paint);break;
+                case "multitask":
+                    c.drawRoundRect(3,6,16,19,2,2,paint);path(c,8,6,8,4,21,4,21,15,16,15);break;
+                case "controls":
+                    c.drawRoundRect(3,3,10.5f,10.5f,2,2,paint);c.drawRoundRect(13.5f,3,21,10.5f,2,2,paint);
+                    c.drawRoundRect(3,13.5f,10.5f,21,2,2,paint);c.drawRoundRect(13.5f,13.5f,21,21,2,2,paint);break;
+                case "exit":
+                    path(c,14,4,6,4,6,20,14,20);path(c,10,12,21,12);path(c,17,8,21,12,17,16);break;
+                case "rotate":
+                    c.drawRoundRect(5,7,17,21,2,2,paint);c.drawArc(9,2,22,15,-95,155,false,paint);path(c,19,11,21,14,17,14);break;
+                case "keymap":
+                    c.drawCircle(12,12,8.5f,paint);path(c,12,3.5f,12,7.5f);path(c,12,16.5f,12,20.5f);path(c,3.5f,12,7.5f,12);path(c,16.5f,12,20.5f,12);c.drawCircle(12,12,2,paint);break;
+                case "edit":
+                    path(c,4,20,8.5f,19,19.5f,8,16,4.5f,5,15.5f,4,20);path(c,13.5f,7,17,10.5f);break;
+                case "trash":
+                    path(c,4,7,20,7);path(c,9,7,9,4,15,4,15,7);path(c,6.5f,7,7.5f,20,16.5f,20,17.5f,7);path(c,10,11,10,16);path(c,14,11,14,16);break;
+                case "copy":
+                    c.drawRoundRect(8,8,20,21,2,2,paint);path(c,16,8,16,4,4,4,4,17,8,17);break;
+                case "scroll_wheel":
+                    c.drawRoundRect(7,2,17,22,5,5,paint);path(c,10,7,12,5,14,7);path(c,10,17,12,19,14,17);c.drawLine(10,12,14,12,paint);break;
                 case "sliders":
                     for(int y=6;y<=18;y+=6){c.drawLine(3,y,21,y,paint);c.drawCircle(y==12?15:8,y,2,paint);}break;
                 case "audio":path(c,3,9,7,9,12,4,12,20,7,15,3,15,3,9);c.drawArc(10,5,21,19,-65,130,false,paint);break;
+                case "audio_off":
+                    path(c,3,9,7,9,12,4,12,20,7,15,3,15,3,9);path(c,16,9,21,15);path(c,21,9,16,15);break;
                 case "mouse":c.drawRoundRect(5,2,19,22,7,7,paint);path(c,12,3,12,10);break;
                 case "folder":path(c,2,19,2,5,9,5,12,8,22,8,22,19,2,19);break;
                 case "chart":path(c,3,3,3,21,22,21);path(c,7,17,7,13);path(c,12,17,12,8);path(c,18,17,18,4);break;

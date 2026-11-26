@@ -77,6 +77,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     private int videoWidth,videoHeight;
     private final RemotePictureInPicture pictureInPicture=new RemotePictureInPicture();
     private RemoteVideoView video;
+    private FloatingKeymapStore keymapStore;
+    private FloatingKeymapOverlay keymapOverlay;
     private RemoteOrientation remoteOrientation;
     private SessionControls controls;
     private Dialog passwordDialog, progressDialog, privacyDialog;
@@ -104,7 +106,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     private Runnable backAction;
 
     @Override public void onCreate(Bundle state){
-        super.onCreate(state);ui=new MobileUi(this);history=new RecentConnections(this);remoteOrientation=new RemoteOrientation(this);
+        super.onCreate(state);ui=new MobileUi(this);history=new RecentConnections(this);keymapStore=new FloatingKeymapStore(this);remoteOrientation=new RemoteOrientation(this);
         pageHost=new PageHost(this);setContentView(pageHost);
         preferences=getSharedPreferences("settings",MODE_PRIVATE);host=preferences.getString("host","api.crossdesk.cn");port=preferences.getInt("port",9099);
         recentPresence.sender=ids->{if(signaling!=null&&!signaling.isClosed())signaling.presenceRequest(ids);};
@@ -143,7 +145,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         settingsUpdateDot=null;aboutUpdateDot=null;settingsUpdateButton=null;aboutUpdateRow=null;aboutUpdateLabel=null;
         previewSwitch=null;clearPreviewsButton=null;previewCleanupError=null;previewCards.clear();recentGrid=null;
         canvas=new FrameLayout(this);canvas.setBackgroundColor(dark?Color.BLACK:BACKGROUND);
-        safeArea=new FrameLayout(this);canvas.addView(safeArea,new FrameLayout.LayoutParams(-1,-1));
+        safeArea=new FrameLayout(this);safeArea.setMotionEventSplittingEnabled(true);canvas.addView(safeArea,new FrameLayout.LayoutParams(-1,-1));
         root=ui.pageColumn(dark?0:nextPage.equals("home")?1200:720);
         safeArea.addView(root,new FrameLayout.LayoutParams(-1,-1,Gravity.TOP|Gravity.CENTER_HORIZONTAL));
         safeArea.setOnApplyWindowInsetsListener((view,insets)->{
@@ -536,23 +538,87 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         dialog.setContentView(card);dialog.setCanceledOnTouchOutside(false);dialog.setOnCancelListener(d->end(""));Window w=dialog.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.setDimAmount(.08f);}dialog.show();if(w!=null)w.setLayout(dp(292),-2);
     }
     private void sessionScreen(boolean autoLandscape){
-        installRoot("session",true);remoteOrientation.begin(autoLandscape,!isTablet()&&!isInMultiWindowMode());video=new RemoteVideoView(this,session);video.setRelative(preferences.getBoolean("relativeMouse",true));
-        // Video, cursor and touch input must share the area inside system bars
-        // and display cutouts; fitting to the outer canvas hides image edges.
-        safeArea.addView(video,0,new FrameLayout.LayoutParams(-1,-1));
-        controls=new SessionControls(this,ui,video::setKeyboardInset,new SessionControls.Actions(){
-            public void disconnect(){confirmDisconnect();}public void display(){selectDisplay();}public void clipboard(){MainActivity.this.clipboard();}
-            public void sendFile(){chooseFile();}public void saveFile(){saveReceivedFile();}public void secureAttention(){MainActivity.this.secureAttention();}
+        sessionScreen(autoLandscape, -1, false);
+    }
+    private void sessionScreen(boolean autoLandscape, int savedOrientationMode, boolean initialViewOnly){
+        installRoot("session",true);
+        if (savedOrientationMode >= 0) remoteOrientation.beginWithMode(savedOrientationMode, autoLandscape);
+        else remoteOrientation.begin(autoLandscape,!isTablet()&&!isInMultiWindowMode());
+        video=new RemoteVideoView(this,session);
+        video.setRelative(preferences.getBoolean("relativeMouse",true));
+        video.setViewOnly(initialViewOnly);
+        keymapOverlay=new FloatingKeymapOverlay(this,ui,keymapStore,video.mouseInput,new FloatingKeymapOverlay.Host(){
+            public void key(int code,boolean down){if(ready&&session!=null&&!video.isViewOnly())session.key(code,down);}
+            public void pasteClipboardOneTap(){MainActivity.this.pasteClipboardOneTap();}
+            public void openClipboardDialog(){MainActivity.this.clipboard();}
+            public void openDrawer(){if(controls!=null)controls.openDrawer();}
+            public void toggleKeyboard(){if(controls!=null)controls.toggleKeyboard();}
+        });
+        keymapOverlay.setPlatform(hostPlatform);
+        keymapOverlay.attachVideo(video);
+        // Video, floating keymap, cursor and touch input share the area inside system bars and cutouts.
+        safeArea.addView(keymapOverlay,0,new FrameLayout.LayoutParams(-1,-1));
+        Runnable syncKeymap=()->{
+            if(keymapOverlay!=null){
+                keymapOverlay.setSuppressed(controls!=null&&controls.isOverlayBlockingKeymap());
+                keymapOverlay.refresh();
+            }
+        };
+        controls=new SessionControls(this,ui,keymapStore,video::setKeyboardInset,syncKeymap,new SessionControls.Actions(){
+            public void disconnect(){confirmDisconnect();}
+            public void display(){selectDisplay();}
+            public void clipboard(){MainActivity.this.clipboard();}
+            public void pasteClipboardOneTap(){MainActivity.this.pasteClipboardOneTap();}
+            public void sendFile(){chooseFile();}
+            public void saveFile(){saveReceivedFile();}
+            public void secureAttention(){MainActivity.this.secureAttention();}
             public void togglePrivacy(){if(ready&&session!=null)session.togglePrivacy();}
-            public void key(int code){tapKey(code);}
-            public boolean textEdit(int count,String value){return sendTextEdit(count,value);}
-            public void chord(int code,int[] modifiers){if(ready&&session!=null)session.chord(code,modifiers);}public void shortcut(int code){MainActivity.this.shortcut(code);}public void text(String value){sendText(value);}
+            public void key(int code){if(video==null||!video.isViewOnly())tapKey(code);}
+            public void keyHold(int code,boolean down){if(ready&&session!=null&&(video==null||!video.isViewOnly()))session.key(code,down);}
+            public boolean textEdit(int count,String value){return (video==null||!video.isViewOnly())&&sendTextEdit(count,value);}
+            public void chord(int code,int[] modifiers){if(ready&&session!=null&&(video==null||!video.isViewOnly()))session.chord(code,modifiers);}
+            public void lockWorkstation(){if(ready&&session!=null)session.lockWorkstation(hostPlatform);}
+            public void showDesktop(){
+                if(!ready||session==null||(video!=null&&video.isViewOnly()))return;
+                if("macos".equals(hostPlatform))session.chord(KeyCatalog.VK_F1+2,new int[]{KeyCatalog.VK_LWIN});
+                else session.chord('D',new int[]{KeyCatalog.VK_LWIN});
+            }
+            public void showAllWindows(){
+                if(!ready||session==null||(video!=null&&video.isViewOnly()))return;
+                if("macos".equals(hostPlatform))session.chord(KeyCatalog.VK_UP,new int[]{KeyCatalog.VK_LCONTROL});
+                else if("linux".equals(hostPlatform))tapKey(KeyCatalog.VK_LWIN);
+                else session.chord(KeyCatalog.VK_TAB,new int[]{KeyCatalog.VK_LWIN});
+            }
+            public void cycleOrientation(){
+                remoteOrientation.cycleMode();
+                if(controls!=null)controls.refreshOrientation();
+                toast(L10n.tr("屏幕方向：")+remoteOrientation.modeLabel());
+            }
+            public String orientationLabel(){return remoteOrientation.modeLabel();}
+            public boolean isOrientationLocked(){return remoteOrientation.mode()!=RemoteOrientation.MODE_AUTO;}
+            public void toggleViewOnly(){
+                if(video==null)return;
+                boolean next=!video.isViewOnly();
+                if(next){releaseKeys();if(keymapOverlay!=null)keymapOverlay.releaseAllInputs();}
+                video.setViewOnly(next);
+                if(controls!=null)controls.setViewOnly(next);
+                toast(L10n.tr(next?"已开启仅观看模式":"已退出仅观看模式"));
+            }
+            public boolean isViewOnly(){return video!=null&&video.isViewOnly();}
+            public void setRelativeMouse(boolean relative){
+                preferences.edit().putBoolean("relativeMouse",relative).apply();
+                if(video!=null)video.setRelative(relative);
+                if(controls!=null)controls.setRelative(relative);
+            }
+            public void text(String value){if(video==null||!video.isViewOnly())sendText(value);}
             public void mute(){muted=!muted;if(session!=null)session.control(2,muted?0:1);controls.setMuted(muted);}
-            public void mouse(){boolean relative=!preferences.getBoolean("relativeMouse",true);preferences.edit().putBoolean("relativeMouse",relative).apply();video.setRelative(relative);controls.setRelative(relative);}
+            public void mouse(){boolean relative=!preferences.getBoolean("relativeMouse",true);setRelativeMouse(relative);}
             public void displayResolution(RemoteDisplayResolutions.Mode mode){updateDisplayResolution(mode);}
             public void videoSettings(int field,int value){RemoteVideoSettings.Values old=MainActivity.this.videoSettings.selection;updateVideoSettings(new RemoteVideoSettings.Values(field==0?value:old.quality,field==1?value:old.frameRate,field==2?value:old.preference));}
-        });controls.setHostPlatform(hostPlatform);controls.setRelative(preferences.getBoolean("relativeMouse",true));controls.setMuted(muted);controls.videoSettings(videoSettings);controls.displayResolutions(displayResolutions,selectedDisplay);root.addView(controls,new LinearLayout.LayoutParams(-1,-1));getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        });
+        controls.setHostPlatform(hostPlatform);controls.setRelative(preferences.getBoolean("relativeMouse",true));controls.setViewOnly(initialViewOnly);controls.setMuted(muted);controls.videoSettings(videoSettings);controls.displayResolutions(displayResolutions,selectedDisplay);root.addView(controls,new LinearLayout.LayoutParams(-1,-1));getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         controls.attachMouseBar(safeArea,safeArea.indexOfChild(root),new VirtualMouseBar(ui,video.mouseInput));
+        syncKeymap.run();
         privacyChanged();
         video.remoteFocusChanged=()->{if(controls!=null)controls.resetKeyboardContext();};
         controls.requestApplyInsets();
@@ -568,7 +634,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         if(backgroundSession!=null){BackgroundSession retained=backgroundSession;backgroundSession=null;retained.detach(this);retained.finish(reason);}
         boolean closeWindow=isInPictureInPictureMode();
         pictureInPicture.disconnect();updatePictureInPicture();
-        if(controls!=null)controls.cancelMouseInput();if(video!=null)video.releaseMouse();
+        if(keymapOverlay!=null)keymapOverlay.releaseAllInputs();
+        if(controls!=null)controls.releaseTransientInputs();if(video!=null)video.releaseMouse();
         mainHandler.removeCallbacks(documentTimeout);documentSession=null;documentToSave=null;receivedFile=null;remoteServiceAvailable=false;
         resetRemoteVersionCheck();
         resetVideoSettings();
@@ -576,7 +643,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         if(progressDialog!=null){progressDialog.dismiss();progressDialog=null;}
         if(session!=null){releaseKeys();session.close();session=null;}
         if(!foreground)stopSignaling();
-        pendingPassword="";remoteClipboard="";hostPlatform="";displays=new JSONArray();ready=false;video=null;controls=null;getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        pendingPassword="";remoteClipboard="";hostPlatform="";displays=new JSONArray();ready=false;video=null;keymapOverlay=null;controls=null;getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if(closeWindow){finish();return;}
         home(reason);
         appUpdates.checkNow();
@@ -769,6 +836,33 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     @Override public void controlFeedback(String message){
         toast(message);
     }
+    private void pasteClipboardOneTap() {
+        NativeSession target = session;
+        if (!ready || target == null || (video != null && video.isViewOnly())) return;
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        String text = "";
+        try {
+            ClipData clip = clipboard.getPrimaryClip();
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    CharSequence item = clip.getItemAt(i).getText();
+                    if (!TextUtils.isEmpty(item)) {
+                        text = item.toString();
+                        break;
+                    }
+                }
+            }
+        } catch (SecurityException denied) {
+            toast(L10n.tr("无法访问剪贴板，请重试。"));
+            return;
+        }
+        if (text.isEmpty()) {
+            clipboard();
+            return;
+        }
+        target.pasteClipboardText(text, hostPlatform);
+    }
+
     private void clipboard() {
         NativeSession target = session;
         if (!ready || target == null) return;
@@ -791,8 +885,34 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         } catch (SecurityException denied) {
             input.setError(L10n.tr("无法访问剪贴板，请重试。"));
         }
+        LinearLayout clipWrap = column();
+        clipWrap.setPadding(dp(18), dp(8), dp(18), dp(4));
+        clipWrap.addView(input, ui.size(-1, -2));
+        ui.gap(clipWrap, 8);
+        LinearLayout quickPasteRow = row();
+        AlertDialog[] dialogRef = new AlertDialog[1];
+        TextView pasteStd = ui.action(L10n.tr("同步并粘贴"), BLUE, () -> {
+            String text = input.getText().toString();
+            if (text.isEmpty()) { input.setError(L10n.tr("剪贴板中没有文本")); return; }
+            target.pasteClipboardText(text, hostPlatform, false);
+            if (dialogRef[0] != null) dialogRef[0].dismiss();
+        });
+        pasteStd.setTextSize(13); pasteStd.setMinHeight(dp(38)); pasteStd.setBackground(ui.background(0x162E7ADB, 9));
+        TextView pasteTerm = ui.action("Shift+Ins " + L10n.tr("终端粘贴"), INK, () -> {
+            String text = input.getText().toString();
+            if (text.isEmpty()) { input.setError(L10n.tr("剪贴板中没有文本")); return; }
+            target.pasteClipboardText(text, hostPlatform, true);
+            if (dialogRef[0] != null) dialogRef[0].dismiss();
+        });
+        pasteTerm.setTextSize(13); pasteTerm.setMinHeight(dp(38)); pasteTerm.setBackground(ui.background(BACKGROUND, 9));
+        quickPasteRow.addView(pasteStd, new LinearLayout.LayoutParams(0, dp(38), 1));
+        LinearLayout.LayoutParams termLp = new LinearLayout.LayoutParams(0, dp(38), 1);
+        termLp.leftMargin = dp(8);
+        quickPasteRow.addView(pasteTerm, termLp);
+        clipWrap.addView(quickPasteRow);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(L10n.tr("剪贴板")).setView(input)
+                .setTitle(L10n.tr("剪贴板")).setView(clipWrap)
                 .setMessage(L10n.tr("发送后，在远程键盘中点击“粘贴”。接收的远端文本可手动复制到本机。"))
                 .setNegativeButton(L10n.tr("关闭"), null)
                 .setNeutralButton(L10n.tr("复制远端文本"), (d, w) -> {
@@ -801,6 +921,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
                     }
                 })
                 .setPositiveButton(L10n.tr("发送文本"), null).show();
+        dialogRef[0] = dialog;
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String text = input.getText().toString();
             if (text.isEmpty()) {
@@ -952,6 +1073,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         if(info!=null){
             hostPlatform=info.optString("platform","");JSONArray list=info.optJSONArray("displays");if(list!=null)displays=list;history.metadata(serverKey(),connectedRemote,info.optString("host_name"),hostPlatform);
             if(controls!=null)controls.setHostPlatform(hostPlatform);
+            if(keymapOverlay!=null)keymapOverlay.setPlatform(hostPlatform);
             boolean wasSupported=videoSettings.supported;videoSettings.setSupported(info.optBoolean("supports_video_settings",false));
             if(!videoSettings.supported)cancelVideoSettingsTimeout();
             if(controls!=null)controls.videoSettings(videoSettings);
@@ -970,7 +1092,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         if (!foreground || pictureInPictureUi || isInPictureInPictureMode() || isFinishing()) return;
         if (privacyUnlockDialog == null) {
             releaseKeys();
-            if (controls != null) { controls.closeKeyboard(); controls.cancelMouseInput(); }
+            if (keymapOverlay != null) keymapOverlay.releaseAllInputs();
+            if (controls != null) { controls.closeKeyboard(); controls.releaseTransientInputs(); }
             if (video != null) video.releaseMouse();
             privacyUnlockDialog = new AlertDialog.Builder(this).setTitle(L10n.tr("隐私屏已被解锁"))
                 .setMessage(L10n.tr("被控端已通过组合键解除隐私屏。点击“锁定”将重新开启隐私屏，并禁止本机使用组合键解锁。"))
@@ -995,6 +1118,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     @Override public void statistics(RemoteNetworkStatistics.Snapshot value){if(controls!=null)controls.statistics(value);if(value.fps>0)capturePreviewIfNeeded();}
     @Override public boolean dispatchKeyEvent(KeyEvent event){
         if (privacyUnlockDialog != null) return super.dispatchKeyEvent(event);
+        if (video != null && video.isViewOnly() && event.getKeyCode() != KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
         int code=KeyMap.windowsCode(event.getKeyCode());View focus=getCurrentFocus();
         boolean remoteEditor=focus instanceof RemoteKeyboardInput;
         boolean desktopKey=event.isCtrlPressed()||event.isAltPressed()||event.isMetaPressed()||pressed.contains(code)
@@ -1006,9 +1130,9 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         }
         return super.dispatchKeyEvent(event);
     }
-    private void releaseKeys(){if(session!=null)for(int code:pressed)session.key(code,false);pressed.clear();}
+    private void releaseKeys(){if(session!=null)for(int code:pressed)session.key(code,false);pressed.clear();if(keymapOverlay!=null)keymapOverlay.releaseAllInputs();if(controls!=null)controls.releaseTransientInputs();}
     private void navigateBack(){if(backAction==null)return;navigatingBack=true;try{backAction.run();}finally{navigatingBack=false;}}
-    private void back(){if(controls!=null&&controls.closeKeyboard())return;pageHost.finish();if(session!=null){if(ready)confirmDisconnect();else end("");}else if(backAction!=null)navigateBack();else finish();}
+    private void back(){if(controls!=null&&controls.handleBack())return;pageHost.finish();if(session!=null){if(ready)confirmDisconnect();else end("");}else if(backAction!=null)navigateBack();else finish();}
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(!focus)releaseKeys();else applySystemBars();}
     @Override public void onMultiWindowModeChanged(boolean multiWindow, Configuration config) {
         super.onMultiWindowModeChanged(multiWindow, config);
@@ -1041,6 +1165,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         retained.clipboard=remoteClipboard;retained.videoSettings=videoSettings;retained.displayResolutions=displayResolutions;retained.receivedFile=receivedFile;
         retained.width=videoWidth;retained.height=videoHeight;
         retained.autoLandscape=remoteOrientation.autoLandscape();
+        retained.orientationMode=remoteOrientation.mode();
+        retained.viewOnly=video!=null&&video.isViewOnly();
     }
     private boolean prepareBackgroundSession(boolean inform){
         if(!ready||session==null||session.isClosed()||isFinishing()||!hasNetworkConsent())return false;
@@ -1080,9 +1206,10 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         hostPlatform=retained.platform;displays=retained.displays;muted=retained.muted;selectedDisplay=retained.selectedDisplay;
         remoteServiceAvailable=retained.remoteServiceAvailable;remoteClipboard=retained.clipboard;receivedFile=retained.receivedFile;
         videoSettings=retained.videoSettings;displayResolutions=retained.displayResolutions;ready=true;retained.attach(this);
-        if(rebuild)sessionScreen(retained.autoLandscape);
+        if(rebuild)sessionScreen(retained.autoLandscape,retained.orientationMode,retained.viewOnly);
         if(retained.width>0&&retained.height>0)videoSize(retained.width,retained.height);
         if(controls!=null){controls.setHostPlatform(hostPlatform);controls.setMuted(muted);controls.videoSettings(videoSettings);controls.displayResolutions(displayResolutions,selectedDisplay);controls.fileStatus(retained.fileStatus,receivedFile!=null);}
+        if(keymapOverlay!=null)keymapOverlay.setPlatform(hostPlatform);
         retained.setBackground(false);signaling(signalState,localIdentity);
         return true;
     }
@@ -1127,11 +1254,16 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     @android.annotation.TargetApi(31)
     @Override public void onPictureInPictureUiStateChanged(android.app.PictureInPictureUiState state){
         super.onPictureInPictureUiStateChanged(state);
-        if(android.os.Build.VERSION.SDK_INT>=35&&state.isTransitioningToPip())setPictureInPictureUi(true);
+        if(android.os.Build.VERSION.SDK_INT>=35&&isTransitioningToPip(state))setPictureInPictureUi(true);
+    }
+    @android.annotation.TargetApi(31)
+    private static boolean isTransitioningToPip(android.app.PictureInPictureUiState state){
+        try{return Boolean.TRUE.equals(android.app.PictureInPictureUiState.class.getMethod("isTransitioningToPip").invoke(state));}
+        catch(ReflectiveOperationException ignored){return false;}
     }
     @Override protected void onResume(){super.onResume();privacyChanged();if(!isInPictureInPictureMode())enteredPictureInPicture=false;setPictureInPictureUi(isInPictureInPictureMode());updatePictureInPicture();if(ready&&!canUsePictureInPicture())prepareBackgroundSession(true);if(backgroundSession!=null)requestBackgroundNotifications();}
     // onStart marks a new visit; focus/resume callbacks must not reopen a refused notice.
-    @Override protected void onPause(){releaseKeys();if(controls!=null)controls.cancelMouseInput();if(video!=null)video.releaseMouse();super.onPause();}
+    @Override protected void onPause(){releaseKeys();if(controls!=null)controls.releaseTransientInputs();if(video!=null)video.releaseMouse();super.onPause();}
     @Override protected void onStart(){super.onStart();foreground=true;restoreBackgroundSession();appUpdates.setEnabled(preferences.getBoolean("networkConsent",false));if(!preferences.getBoolean("networkConsent",false))consent(this::renderSignaling);ensureSignaling();showConnectionMessage();}
     @Override protected void onStop(){dismissPrivacyUnlockDialog();if(controls!=null)controls.closeKeyboard();foreground=false;appUpdates.setEnabled(false);if(privacyDialog!=null)privacyDialog.dismiss();pageHost.finish();
         if(connectionDialog!=null)connectionDialog.dismiss();
