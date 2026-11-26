@@ -30,14 +30,21 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.3.0'
 }
 
+def pythonExecutable = providers.gradleProperty('pythonExecutable').orElse('python3')
+def skipNativeBuild = providers.gradleProperty('skipNativeBuild').map { it.toBoolean() }.orElse(false)
+def prebuiltArm64Lib = layout.buildDirectory.file('native/arm64-v8a/libcrossdesk_android.so')
+
 tasks.register('buildMiniRtc', Exec) {
     workingDir rootProject.projectDir
-    commandLine 'python3', 'scripts/build_native.py'
+    commandLine pythonExecutable.get(), 'scripts/build_native.py'
+    environment 'PYTHONUTF8', '1'
     environment 'ANDROID_HOME', androidComponents.sdkComponents.sdkDirectory.get().asFile.absolutePath
+    onlyIf { !(skipNativeBuild.get() && prebuiltArm64Lib.get().asFile.isFile()) }
 }
 tasks.named('preBuild').configure { dependsOn 'buildMiniRtc' }
 tasks.register('generateNotices', Exec) {
     workingDir rootProject.projectDir
-    commandLine 'python3', 'scripts/generate_notices.py'
+    commandLine pythonExecutable.get(), 'scripts/generate_notices.py'
+    environment 'PYTHONUTF8', '1'
 }
 tasks.named('preBuild').configure { dependsOn 'generateNotices' }

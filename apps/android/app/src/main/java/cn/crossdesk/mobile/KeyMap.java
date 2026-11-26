@@ -37,6 +37,27 @@ final class KeyMap {
             case KeyEvent.KEYCODE_PERIOD -> 0xBE;
             case KeyEvent.KEYCODE_SLASH -> 0xBF;
             case KeyEvent.KEYCODE_GRAVE -> 0xC0;
+            case KeyEvent.KEYCODE_CAPS_LOCK -> 0x14;
+            case KeyEvent.KEYCODE_SYSRQ -> 0x2C;
+            case KeyEvent.KEYCODE_SCROLL_LOCK -> 0x91;
+            case KeyEvent.KEYCODE_BREAK -> 0x13;
+            case KeyEvent.KEYCODE_INSERT -> 0x2D;
+            case KeyEvent.KEYCODE_NUM_LOCK -> 0x90;
+            case KeyEvent.KEYCODE_NUMPAD_0 -> 0x60;
+            case KeyEvent.KEYCODE_NUMPAD_1 -> 0x61;
+            case KeyEvent.KEYCODE_NUMPAD_2 -> 0x62;
+            case KeyEvent.KEYCODE_NUMPAD_3 -> 0x63;
+            case KeyEvent.KEYCODE_NUMPAD_4 -> 0x64;
+            case KeyEvent.KEYCODE_NUMPAD_5 -> 0x65;
+            case KeyEvent.KEYCODE_NUMPAD_6 -> 0x66;
+            case KeyEvent.KEYCODE_NUMPAD_7 -> 0x67;
+            case KeyEvent.KEYCODE_NUMPAD_8 -> 0x68;
+            case KeyEvent.KEYCODE_NUMPAD_9 -> 0x69;
+            case KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> 0x6A;
+            case KeyEvent.KEYCODE_NUMPAD_ADD -> 0x6B;
+            case KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 0x6D;
+            case KeyEvent.KEYCODE_NUMPAD_DOT -> 0x6E;
+            case KeyEvent.KEYCODE_NUMPAD_DIVIDE -> 0x6F;
             default -> 0;
         };
     }
