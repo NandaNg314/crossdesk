@@ -128,7 +128,7 @@ final class VirtualMouseBar extends FrameLayout {
         this.closeGapDp = compactPhone ? 3 : 4;
         this.expandedWidthDp = bodyWidthDp + closeGapDp + closeBadgeDp;
         this.expandedHeightDp = bodyHeightDp + TOP_OVERHANG_DP;
-        this.coupledOffsetXDp = compactPhone ? 12f : COUPLED_OFFSET_X_DP;
+        this.coupledOffsetXDp = compactPhone ? 10f : 12f;
 
         setMotionEventSplittingEnabled(true);
         setClipChildren(false);
