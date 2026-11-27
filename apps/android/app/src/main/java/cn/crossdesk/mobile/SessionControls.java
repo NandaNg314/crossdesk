@@ -607,9 +607,9 @@ final class SessionControls extends FrameLayout {
             float cx = Float.isNaN(lastCursorX) ? w * 0.5f : lastCursorX;
             float cy = Float.isNaN(lastCursorY) ? h * 0.5f : lastCursorY;
             float coupledX = PointerBallistics.coupledMouseCoord(
-                    cx, ui.dp(VirtualMouseBar.COUPLED_OFFSET_X_DP));
+                    cx, ui.dp(mouseBar.coupledOffsetXDp()));
             float coupledY = PointerBallistics.coupledMouseCoord(
-                    cy, ui.dp(VirtualMouseBar.COUPLED_OFFSET_Y_DP));
+                    cy, ui.dp(mouseBar.coupledOffsetYDp()));
             mouseBar.setTranslationX(coupledX);
             mouseBar.setTranslationY(coupledY);
             mouseBar.setVisibility(VISIBLE);
