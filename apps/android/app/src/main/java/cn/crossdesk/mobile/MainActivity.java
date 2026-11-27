@@ -1097,7 +1097,20 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         cancelDisplayResolutionTimeout();displayResolutions=new RemoteDisplayResolutions();
         cancelVideoSettingsTimeout();
         android.util.DisplayMetrics metrics=getResources().getDisplayMetrics();
-        videoSettings=new RemoteVideoSettings(preferences.getInt("videoPreference",1),Math.max(metrics.widthPixels,metrics.heightPixels));
+        int longEdge=Math.max(metrics.widthPixels,metrics.heightPixels);
+        int defaultQuality=(longEdge>0&&longEdge<=1280)?0:1;
+        int q=preferences.getInt("videoQuality",defaultQuality);
+        int r=preferences.getInt("videoFrameRate",30);
+        int p=preferences.getInt("videoPreference",1);
+        videoSettings=new RemoteVideoSettings(q,r,p);
+    }
+    private void persistVideoSettings(RemoteVideoSettings.Values values){
+        if(values==null||!values.valid())return;
+        preferences.edit()
+                .putInt("videoQuality",values.quality)
+                .putInt("videoFrameRate",values.frameRate)
+                .putInt("videoPreference",values.preference)
+                .apply();
     }
     private void updateVideoSettings(RemoteVideoSettings.Values value){
         if(!ready||session==null||!preferences.getBoolean("networkConsent",false))return;
@@ -1115,7 +1128,16 @@ public final class MainActivity extends Activity implements NativeSession.Listen
             if(message.optInt("type",-1)==16)return;
         }
         if(message.optInt("type",-1)==5){JSONObject service=message.optJSONObject("service_status");remoteServiceAvailable=service!=null&&service.optBoolean("available",false);return;}
-        if(message.optInt("type",-1)==12){if(!ready)return;videoSettings.receive(message);if(!videoSettings.pending)cancelVideoSettingsTimeout();if(controls!=null)controls.videoSettings(videoSettings);return;}
+        if(message.optInt("type",-1)==12){
+            if(!ready)return;
+            videoSettings.receive(message);
+            if(!videoSettings.pending){
+                cancelVideoSettingsTimeout();
+                if(!videoSettings.failed)persistVideoSettings(videoSettings.applied);
+            }
+            if(controls!=null)controls.videoSettings(videoSettings);
+            return;
+        }
         JSONObject info=message.optJSONObject("host_info");
         if(info!=null){
             hostPlatform=info.optString("platform","");JSONArray list=info.optJSONArray("displays");if(list!=null)displays=list;history.metadata(serverKey(),connectedRemote,info.optString("host_name"),hostPlatform);
