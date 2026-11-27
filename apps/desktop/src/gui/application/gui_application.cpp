@@ -223,16 +223,6 @@ class ScopedUnsetEnvironmentVariable {
     return 0;
   }
 
-  ::Window focused_window = 0;
-  int revert_to = RevertToNone;
-  XGetInputFocus(display, &focused_window, &revert_to);
-  if (focused_window == None) {
-    // Under XWayland, focusing a native Wayland window or opening the desktop
-    // shell overview clears X11 input focus while _NET_ACTIVE_WINDOW may still
-    // reference the last XWayland window.
-    return 0;
-  }
-
   const ::Window root = DefaultRootWindow(display);
   const Atom active_window_atom =
       XInternAtom(display, "_NET_ACTIVE_WINDOW", True);
@@ -249,16 +239,19 @@ class ScopedUnsetEnvironmentVariable {
         data) {
       const ::Window active_window = *reinterpret_cast<const ::Window*>(data);
       XFree(data);
-      if (active_window != None) {
-        return active_window;
-      }
+      return active_window;
     }
     if (data) {
       XFree(data);
     }
   }
 
-  return focused_window == PointerRoot ? 0 : focused_window;
+  ::Window focused_window = 0;
+  int revert_to = RevertToNone;
+  XGetInputFocus(display, &focused_window, &revert_to);
+  return focused_window == None || focused_window == PointerRoot
+             ? 0
+             : focused_window;
 }
 
 std::optional<unsigned long> X11GetWindowProcessId(Display* display,
@@ -1814,6 +1807,10 @@ void GuiApplication::ResetSettingsUi(bool gallery_window) {
   main->set_privacy_on_connect_enabled(
       config_center_->IsEnablePrivacyScreen());
   main->set_privacy_local_unlock_allowed(config_center_->IsPrivacyLocalUnlockAllowed());
+#ifdef __APPLE__
+  main->set_auto_virtual_display_available(true);
+  main->set_auto_virtual_display(config_center_->IsAutoVirtualDisplay());
+#endif
 #if defined(_WIN32) || defined(__APPLE__)
   main->set_privacy_black_screen_available(true);
   main->set_privacy_black_screen(config_center_->IsPrivacyBlackScreen());
@@ -1850,15 +1847,16 @@ void GuiApplication::ResetSettingsUi(bool gallery_window) {
 
 void GuiApplication::BindMainCallbacks(bool gallery_window) {
   auto* main = ui_->Window(gallery_window).operator->();
-  main->on_gallery_pointer([this](slint::PointerEventButton button,
+  main->on_gallery_pointer([this, main](slint::PointerEventButton button,
                                  slint::PointerEventKind kind, float x,
                                  float y) {
     if (!ui_->gallery_control_id.empty() && !ui_->gallery_transition.Active())
-      SendPointerInput(static_cast<int>(button), static_cast<int>(kind), x, y);
+      SendPointerInput(static_cast<int>(button), static_cast<int>(kind), x, y,
+                       main->get_gallery_pointer_shift());
   });
-  main->on_gallery_scroll([this](float dx, float dy, float x, float y) {
+  main->on_gallery_scroll([this, main](float dx, float dy, float x, float y) {
     if (!ui_->gallery_control_id.empty() && !ui_->gallery_transition.Active())
-      SendScrollInput(dx, dy, x, y);
+      SendScrollInput(dx, dy, x, y, main->get_gallery_pointer_shift());
   });
   main->on_gallery_key([this](slint::SharedString text, bool pressed,
                              bool ctrl, bool alt, bool shift, bool meta) {
@@ -2104,6 +2102,9 @@ void GuiApplication::BindMainCallbacks(bool gallery_window) {
     try {
       const auto [address, port] = lan::ParseEndpoint(Trim(std::string(endpoint)), 52888);
       if (!LanAvailable()) return UiText(lan_error_.empty() ? "Busy" : lan_error_);
+      lan_expected_key_.clear();
+      lan_saved_password_ = false;
+      main->set_lan_key_change("");
       main->set_lan_remote_address(UiText(address));
       main->set_lan_remote_port(UiText(std::to_string(port)));
       main->set_lan_retry_after(lan_->RetryAfter(address, port));
@@ -2113,7 +2114,11 @@ void GuiApplication::BindMainCallbacks(bool gallery_window) {
         if (recent.lan.address != address ||
             recent.lan.port != port)
           continue;
-        if (recent.remember_password && lan::ValidPassword(recent.password)) {
+        lan_expected_key_ = recent.lan.fingerprint;
+        if (recent.remember_password && lan::ValidPassword(recent.password) &&
+            (!lan::IsDnsName(address) ||
+             lan::ValidFingerprint(lan_expected_key_))) {
+          lan_saved_password_ = true;
           main->set_lan_access_password(UiText(recent.password));
           main->set_lan_remember_password(true);
         }
@@ -2139,6 +2144,7 @@ void GuiApplication::BindMainCallbacks(bool gallery_window) {
     try {
       ConnectLan(std::string(address), lan::ParsePort(std::string(port)),
                  std::string(password), remember);
+      if (lan_connecting_) main->set_lan_key_change("");
     } catch (const std::exception& error) {
       lan_error_ = error.what();
     }
@@ -2652,13 +2658,14 @@ void GuiApplication::BindStreamCallbacks(StreamView& view) {
       const DisplayResolutionChange selection{props->selected_display_,
           view.resolution_choices.display_key, view.resolution_choices.modes[index]};
       // Explicitly choosing the current mode also establishes a preference.
-      if (!state.pending && std::any_of(state.displays.begin(), state.displays.end(),
+      const auto current = std::find_if(state.displays.begin(), state.displays.end(),
           [&](const auto& display) {
             return SupportsDisplayResolution(display, selection) &&
                    display.current == selection.resolution;
-          })) {
+          });
+      if (!state.pending && current != state.displays.end()) {
         if (!remote_resolutions_.Remember(props->device_preference_key_,
-                {selection.display_key, selection.resolution}))
+                current->CurrentPreference()))
           LOG_WARN("Could not save remote display resolution");
         return;
       }
@@ -2727,11 +2734,12 @@ void GuiApplication::BindStreamCallbacks(StreamView& view) {
                                   slint::PointerEventKind kind, float x,
                                   float y) {
     if (!AcceptStreamInput(view)) return;
-    SendPointerInput(static_cast<int>(button), static_cast<int>(kind), x, y);
+    SendPointerInput(static_cast<int>(button), static_cast<int>(kind), x, y,
+                     view.window->get_pointer_shift());
   });
   stream->on_scroll_input([this, &view](float dx, float dy, float x, float y) {
     if (!AcceptStreamInput(view)) return;
-    SendScrollInput(dx, dy, x, y);
+    SendScrollInput(dx, dy, x, y, view.window->get_pointer_shift());
   });
   stream->on_key_input([this, &view](slint::SharedString text, bool pressed,
                               bool control, bool alt, bool shift, bool meta) {
@@ -2771,6 +2779,15 @@ void GuiApplication::Tick() {
       ui_->main->set_lan_open(false);
       lan_connecting_.reset();
     } else if (lan_connecting_ && lan_connecting_->closing) {
+      const auto& observed = lan_connecting_->observed_host_key;
+      if (!observed.empty()) {
+        ui_->main->set_lan_key_change(
+            UiText(lan_expected_key_ + "\n↓\n" + observed));
+        ui_->main->set_lan_access_password("");
+        lan_expected_key_ = observed;
+        lan_saved_password_ = false;
+        lan_error_ = "HostKeyChanged";
+      }
       lan_connecting_.reset();
     }
     ui_->main->set_lan_connecting(lan_connecting_ != nullptr);
@@ -3884,6 +3901,12 @@ void GuiApplication::SyncConnectionDialog() {
            : auth.incorrect_password
                ? localization::reinput_password[localization_language_index_]
                : localization::input_password[localization_language_index_];
+  } else if (auth.unresponsive) {
+    text = localization::join_unresponsive[localization_language_index_];
+  } else if (pending && auth.checking_delivery) {
+    text = localization::join_checking[localization_language_index_];
+  } else if (pending && auth.received) {
+    text = localization::join_received[localization_language_index_];
   } else if (auth.error == MiniRtcJoinFailureKind::Throttled) {
     text = localization::connection_auth_throttled[localization_language_index_];
   } else if (auth.error == MiniRtcJoinFailureKind::Busy) {
@@ -4001,7 +4024,7 @@ void GuiApplication::SyncXWaylandWindowActivation() {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  if (now - ui_->last_x11_activation_poll < 16ms) {
+  if (now - ui_->last_x11_activation_poll < 100ms) {
     return;
   }
   ui_->last_x11_activation_poll = now;
@@ -4041,8 +4064,7 @@ void GuiApplication::SetStreamKeyboardFocus(StreamView& view, bool focused) {
 #elif defined(__OHOS__)
   focused = focused && IsHarmonyWindowActive(view.window->window());
 #else
-  focused = focused && view.window->get_window_active() &&
-            view.window->get_video_input_focused();
+  focused = focused && view.window->get_video_input_focused();
 #endif
   if (!focused) {
     if (ui_->gallery_control_id.empty() && controlled_remote_id_ == id) {
@@ -4085,8 +4107,6 @@ void GuiApplication::SyncStreamKeyboardFocus() {
     if (GetForegroundWindow() != ui_->wall->window().win32_hwnd()) ReleaseControl();
 #elif defined(__OHOS__)
     if (!IsHarmonyWindowActive(ui_->wall->window())) ReleaseControl();
-#else
-    if (!ui_->wall->get_window_active()) ReleaseControl();
 #endif
   }
   for (auto& [_, view] : ui_->streams) {
@@ -4389,7 +4409,14 @@ void GuiApplication::SyncStreamWindow(StreamView& view) {
       : mode == MiniRtcTraversalRelay
           ? localization::connection_mode_relay[localization_language_index_] : "—"));
   stream->set_stats_local_endpoint(UiText(direct ? net.local_endpoint : ""));
-  stream->set_stats_remote_endpoint(UiText(direct ? net.remote_endpoint : ""));
+  std::string remote_endpoint = direct ? net.remote_endpoint : "";
+  const auto& session = props->lan_session_;
+  if (!remote_endpoint.empty() && session &&
+      lan::IsDnsName(session->target.address))
+    remote_endpoint =
+        lan::FormatEndpoint(session->target.address, session->target.port) +
+        " → " + remote_endpoint;
+  stream->set_stats_remote_endpoint(UiText(remote_endpoint));
 
   const auto fps_now = std::chrono::steady_clock::now();
   bool refresh_stats = false;
@@ -5232,6 +5259,14 @@ bool GuiApplication::PersistSettingsFromUi(bool gallery_window) {
         localization::Literal("无法保存隐私屏解锁设置，请重试。", localization_language_index_)));
     return false;
   }
+#ifdef __APPLE__
+  if (config_center_->SetAutoVirtualDisplay(main->get_auto_virtual_display()) != 0) {
+    if (wall_changed) previous_wall.Save(shared_wall_path);
+    main->set_settings_save_error(UiText(
+        localization::Literal("保存失败，请重试", localization_language_index_)));
+    return false;
+  }
+#endif
   if (main->get_privacy_black_screen_available() &&
       config_center_->SetPrivacyBlackScreen(main->get_privacy_black_screen()) != 0) {
     if (wall_changed) previous_wall.Save(shared_wall_path);
@@ -5642,58 +5677,16 @@ std::optional<VideoPoint> GuiApplication::MapRemotePointer(
   return point;
 }
 
-void GuiApplication::SyncWindowModifiersBeforePointer() {
+void GuiApplication::SyncPointerShift(bool shift) {
   if (keyboard_capturer_is_started_ && !keyboard_capturer_uses_window_events_) {
-    return;
+    // A native Shift edge may already be queued for the next UI tick.
+    devices_.DrainCapturedKeyboardInput();
+  } else {
+    keyboard_.SyncPointerShift(shift);
   }
-#if defined(_WIN32)
-  DWORD foreground_pid = 0;
-  const HWND foreground = GetForegroundWindow();
-  if (foreground &&
-      GetWindowThreadProcessId(foreground, &foreground_pid) != 0 &&
-      foreground_pid == GetCurrentProcessId()) {
-    auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
-    keyboard_.ReconcileWindowModifiers({
-        down(VK_CONTROL) || down(VK_LCONTROL) || down(VK_RCONTROL),
-        down(VK_MENU) || down(VK_LMENU) || down(VK_RMENU),
-        down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT),
-        down(VK_LWIN) || down(VK_RWIN),
-    });
-    return;
-  }
-#elif (defined(__linux__) && !defined(__OHOS__)) && !defined(__APPLE__)
-  if (use_x11_custom_titlebar_) {
-    if (!ui_->x11_focus_display) {
-      ui_->x11_focus_display = XOpenDisplay(nullptr);
-    }
-    if (Display* display = ui_->x11_focus_display) {
-      ::Window focused_window = 0;
-      int revert_to = RevertToNone;
-      XGetInputFocus(display, &focused_window, &revert_to);
-      if (focused_window != None) {
-        ::Window root_return = 0;
-        ::Window child_return = 0;
-        int root_x = 0, root_y = 0, win_x = 0, win_y = 0;
-        unsigned int mask = 0;
-        if (XQueryPointer(display, DefaultRootWindow(display), &root_return,
-                          &child_return, &root_x, &root_y, &win_x, &win_y,
-                          &mask)) {
-          keyboard_.ReconcileWindowModifiers({
-              (mask & ControlMask) != 0,
-              (mask & (Mod1Mask | Mod5Mask)) != 0,
-              (mask & ShiftMask) != 0,
-              (mask & Mod4Mask) != 0,
-          });
-          return;
-        }
-      }
-    }
-  }
-#endif
-  keyboard_.ReleaseInferredWindowShift();
 }
 
-void GuiApplication::SendPointerInput(int button, int kind, float x, float y) {
+void GuiApplication::SendPointerInput(int button, int kind, float x, float y, bool shift) {
   auto props = FindRemoteSession(controlled_remote_id_);
   if (!props || !props->peer_ || !props->control_mouse_) {
     return;
@@ -5740,7 +5733,7 @@ void GuiApplication::SendPointerInput(int button, int kind, float x, float y) {
   }
 
   if (kind == 1) {
-    SyncWindowModifiersBeforePointer();
+    SyncPointerShift(shift);
     ui_->pressed_mouse_buttons.insert(button);
   }
   if (kind == 2) ui_->pressed_mouse_buttons.erase(button);
@@ -5750,7 +5743,7 @@ void GuiApplication::SendPointerInput(int button, int kind, float x, float y) {
 }
 
 void GuiApplication::SendScrollInput(float delta_x, float delta_y, float x,
-                                     float y) {
+                                     float y, bool shift) {
   auto props = FindRemoteSession(controlled_remote_id_);
   if (!props || !props->peer_ || !props->control_mouse_) {
     return;
@@ -5759,7 +5752,6 @@ void GuiApplication::SendScrollInput(float delta_x, float delta_y, float x,
   if (!point) {
     return;
   }
-  SyncWindowModifiersBeforePointer();
   RemoteAction action{};
   action.type = ControlType::mouse;
   action.m.x = point->x;
@@ -5770,31 +5762,32 @@ void GuiApplication::SendScrollInput(float delta_x, float delta_y, float x,
       vertical ? MouseFlag::wheel_vertical : MouseFlag::wheel_horizontal;
   ui_->pointer_x = point->x;
   ui_->pointer_y = point->y;
+  SyncPointerShift(shift);
   SendRemoteInput(action, delta);
 }
 
 void GuiApplication::SendKeyInput(const std::string& text, bool pressed,
                                   bool control, bool alt, bool shift,
                                   bool meta) {
+  (void)control;
+  (void)alt;
+  (void)meta;
   auto props = FindRemoteSession(controlled_remote_id_);
   if (!props || !props->peer_ || !props->control_mouse_ ||
       props->connection_status_.load() != MiniRtcConnectionStatus::MiniRtcConnectionConnected) {
     return;
   }
 
-  const int virtual_key = SlintKeyToWindowsVk(text);
 
-  // Native capture forwards events independently once started, except for a
-  // release of a key that was pressed via Slint before native capture hooked.
+  // Native capture forwards the event independently. Slint keyboard events
+  // are used only by platforms whose native capture backend is unavailable.
   if (keyboard_capturer_is_started_ && !keyboard_capturer_uses_window_events_) {
-    if (!pressed && virtual_key >= 0) {
-      keyboard_.ReleaseWindowKey(virtual_key);
-    }
     return;
   }
 
+  const int virtual_key = SlintKeyToWindowsVk(text);
   if (virtual_key >= 0) {
-    keyboard_.SendWindowKey(virtual_key, pressed, {control, alt, shift, meta});
+    keyboard_.SendWindowKey(virtual_key, pressed, shift);
   }
 }
 

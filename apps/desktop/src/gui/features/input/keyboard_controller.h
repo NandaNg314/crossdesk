@@ -25,13 +25,8 @@ public:
 
   int SendKeyCommand(int key_code, bool is_down, uint32_t scan_code = 0,
                      bool extended = false);
-  void SendWindowKey(int key_code, bool is_down,
-                     WindowShiftState::Modifiers modifiers);
   void SendWindowKey(int key_code, bool is_down, bool shift);
-  void ReleaseWindowKey(int key_code);
-  void ReconcileWindowModifiers(WindowShiftState::Modifiers live);
-  void OnNativeCaptureStarted();
-  void NoteNativeKey(int key_code);
+  void SyncPointerShift(bool shift);
   void ReleaseInferredWindowShift();
   void ForceReleasePressedKeys();
   void RecoverCapturedState(const PressedKeys& pressed);
@@ -54,6 +49,7 @@ private:
     bool keyboard_state_seen = false;
   };
 
+  WindowShiftState::Held HeldShift();
   void TrackPressedKey(int key_code, bool is_down, uint32_t scan_code,
                        bool extended);
   bool InjectRemoteKey(int key_code, bool is_down, uint32_t scan_code,

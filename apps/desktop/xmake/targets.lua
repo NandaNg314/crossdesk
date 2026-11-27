@@ -471,7 +471,8 @@ function setup_targets()
             add_deps("privacy")
             add_mxxflags("-fobjc-arc")
             add_files("apps/desktop/src/platform/macos/screen_capturer/*.cpp",
-                "apps/desktop/src/platform/macos/screen_capturer/*.mm")
+                "apps/desktop/src/platform/macos/screen_capturer/*.mm",
+                "apps/desktop/src/platform/macos/virtual_display/*.mm")
             add_includedirs("apps/desktop/src/platform/macos/screen_capturer")
         elseif is_os("linux") then
             add_deps("privacy")
@@ -820,6 +821,7 @@ function setup_targets()
                 "apps/desktop/src/platform/macos/gui/tray")
         elseif is_os("linux") then
             add_links("GL")
+            add_syslinks("fribidi", {public = true})
             add_deps("headless_console")
             add_files("apps/desktop/src/platform/linux/gui/tray/linux_tray.cpp",
                 "apps/desktop/src/platform/linux/gui/wayland_activation.cpp",

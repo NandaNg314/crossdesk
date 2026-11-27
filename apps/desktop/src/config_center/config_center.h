@@ -26,7 +26,7 @@ class ConfigCenter {
   enum class LANGUAGE {
     CHINESE = 0, ENGLISH = 1, RUSSIAN = 2, TRADITIONAL_CHINESE = 3,
     JAPANESE = 4, KOREAN = 5, GERMAN = 6, FRENCH = 7, SPANISH = 8,
-    BRAZILIAN_PORTUGUESE = 9, TURKISH = 10, SYSTEM = 11
+    BRAZILIAN_PORTUGUESE = 9, TURKISH = 10, HEBREW = 11, SYSTEM = 12
   };
   // config.ini and numeric console commands reserve 10 for "follow system".
   static constexpr int kSystemLanguageSetting = 10;
@@ -74,6 +74,10 @@ class ConfigCenter {
   int SetPrivacyScreen(bool enable_privacy_screen);
   int SetPrivacyLocalUnlock(bool allowed);
   int SetPrivacyBlackScreen(bool enabled);
+#ifdef __APPLE__
+  int SetAutoVirtualDisplay(bool enabled);
+  bool IsAutoVirtualDisplay() const { return auto_virtual_display_.load(); }
+#endif
   int SetLockOnDisconnect(bool enabled);
   int SetTrustedDevicesOnly(bool enabled);
   int SetSaveRemotePreviews(bool enabled);
@@ -159,6 +163,9 @@ class ConfigCenter {
   std::atomic<bool> enable_privacy_screen_{true};
   std::atomic<bool> privacy_local_unlock_allowed_{true};
   std::atomic<bool> privacy_black_screen_{false};
+#ifdef __APPLE__
+  std::atomic<bool> auto_virtual_display_{true};
+#endif
   std::atomic<bool> lock_on_disconnect_{true};
   std::atomic<bool> trusted_devices_only_{false};
   std::atomic<bool> save_remote_previews_{true};

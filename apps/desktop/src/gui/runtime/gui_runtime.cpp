@@ -84,7 +84,7 @@ GuiRuntime::~GuiRuntime() {
   RestoreHostDisplayResolutions(true);
 }
 
-void GuiRuntime::SendRemoteInput(const RemoteAction& action, float wheel_delta) {
+void GuiRuntime::SendRemoteInput(RemoteAction action, float wheel_delta) {
   const bool mouse = action.type == ControlType::mouse;
   const bool mouse_move = mouse && action.m.flag == MouseFlag::move;
   if (!mouse && action.type != ControlType::keyboard &&
@@ -112,6 +112,7 @@ void GuiRuntime::SendRemoteInput(const RemoteAction& action, float wheel_delta) 
     return;
   const bool wheel = mouse && (action.m.flag == MouseFlag::wheel_vertical ||
                                action.m.flag == MouseFlag::wheel_horizontal);
+  if (mouse && !wheel) action.pointer_sequence = ++pointer_sequence_;
   auto message = wheel ? std::string{} : action.to_json();
   for (const auto& [id, props] : remote_sessions_) {
     if ((!group && id != target_id) || !available(props)) continue;
@@ -138,17 +139,14 @@ void GuiRuntime::SendRemoteInput(const RemoteAction& action, float wheel_delta) 
       std::lock_guard cursor_lock(props->remote_cursor_state_mutex_);
       props->cursor_presentation_.NoteInput(SDL_GetTicks());
     }
-    // Reuse exactly the leader's mapped coordinates and key metadata. Neither
-    // gallery filters nor the follower's preview dimensions affect input.
-    // Move updates supersede old positions and must not wait for KCP retries.
-    // Use the negotiated unreliable stream; clicks and wheel events remain
-    // on the reliable mouse stream, with their own absolute coordinates.
+    // Keep Shift transitions, clicks and wheel gestures in the same reliable
+    // order. The receiver dispatches input by action type. Hover stays lossy.
     const int result = mouse_move
         ? MiniRtcSendDataFrame(props->peer_, message.data(), message.size(),
                         props->data_label_.c_str())
         : MiniRtcSendReliableDataFrame(
               props->peer_, message.data(), message.size(),
-              mouse ? props->mouse_label_.c_str() : props->keyboard_label_.c_str());
+              props->keyboard_label_.c_str());
     if (result != 0) LOG_WARN("Send remote input failed, ret={}", result);
   }
 }
@@ -478,7 +476,8 @@ void GuiRuntime::HandleRecentConnections() {
       const auto direct = props->lan_session_;
       const Thumbnail::LanTarget target =
           direct ? Thumbnail::LanTarget{direct->target.address,
-                                        direct->target.port}
+                                        direct->target.port,
+                                        direct->channel->peer_fingerprint}
                  : Thumbnail::LanTarget{};
       const auto record_id =
           direct ? Thumbnail::LanRecordId(target.address, target.port) : props->remote_id_;
