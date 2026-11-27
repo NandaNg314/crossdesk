@@ -157,8 +157,16 @@ public final class MainActivity extends Activity implements NativeSession.Listen
             if(dark&&android.os.Build.VERSION.SDK_INT>=30){
                 android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());
                 view.setPadding(bars.left,bars.top,bars.right,bars.bottom);
-                if(controls!=null)controls.keyboardInsets(Math.max(0,insets.getInsets(WindowInsets.Type.ime()).bottom-bars.bottom),insets.isVisible(WindowInsets.Type.ime()),bars.bottom);
-            }else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;
+                if(controls!=null){
+                    controls.setSafeHorizontalInsets(bars.left,bars.right);
+                    controls.keyboardInsets(Math.max(0,insets.getInsets(WindowInsets.Type.ime()).bottom-bars.bottom),insets.isVisible(WindowInsets.Type.ime()),bars.bottom);
+                }
+            }else{
+                int l=insets.getSystemWindowInsetLeft(), r=insets.getSystemWindowInsetRight();
+                view.setPadding(l,insets.getSystemWindowInsetTop(),r,insets.getSystemWindowInsetBottom());
+                if(controls!=null)controls.setSafeHorizontalInsets(l,r);
+            }
+            return insets;
         });
         if(!dark)root.setFocusableInTouchMode(true);
         pageHost.show(canvas,motion);

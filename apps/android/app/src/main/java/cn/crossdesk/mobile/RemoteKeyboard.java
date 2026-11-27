@@ -82,6 +82,7 @@ final class RemoteKeyboard extends LinearLayout {
     private final SparseIntArray heights = new SparseIntArray();
     private boolean opened, computer, imeVisible;
     private int imeHeight, navigationBottom, layoutWidth, layoutHeight, lastInsetsHeight = -1, lastInsetsKey;
+    private int safeLeftPx, safeRightPx;
 
     RemoteKeyboard(Context context, MobileUi ui, SessionControls.Actions actions, Runnable changed) {
         super(context);
@@ -93,6 +94,8 @@ final class RemoteKeyboard extends LinearLayout {
         setClickable(true);
         setFocusable(false);
         setMotionEventSplittingEnabled(true);
+        setClipChildren(false);
+        setClipToPadding(false);
 
         editor = new RemoteKeyboardInput(context, new RemoteKeyboardInput.Sender() {
             public boolean edit(int count, String text) { return actions.textEdit(count, text); }
@@ -339,6 +342,20 @@ final class RemoteKeyboard extends LinearLayout {
         shortcutPanel.platform(hostPlatform);
         layoutWidth = layoutHeight = 0;
         if (opened) render();
+    }
+
+    void setSafeHorizontalPadding(int leftPx, int rightPx) {
+        int nextLeft = Math.max(0, leftPx);
+        int nextRight = Math.max(0, rightPx);
+        if (safeLeftPx == nextLeft && safeRightPx == nextRight) return;
+        safeLeftPx = nextLeft;
+        safeRightPx = nextRight;
+        setPadding(safeLeftPx, 0, safeRightPx, 0);
+        layoutWidth = layoutHeight = 0;
+        if (opened) {
+            renderKeysIfNeeded(Math.max(0, getMeasuredWidth() - safeLeftPx - safeRightPx));
+            requestLayout();
+        }
     }
 
     int bottomInset() { return opened && !computer ? imeHeight : 0; }

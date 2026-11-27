@@ -82,6 +82,7 @@ final class SessionControls extends FrameLayout {
 
     private final RemoteKeyboard keyboard;
     private final IntConsumer keyboardInsetChanged;
+    private int safeLeftPx, safeRightPx;
     private java.util.function.Consumer<Boolean> expandedMouseVisibilityListener;
     private VirtualMouseBar mouseBar;
     private float collapsedMouseX = Float.NaN, collapsedMouseY = Float.NaN;
@@ -115,6 +116,8 @@ final class SessionControls extends FrameLayout {
         this.keymapUpdated = keymapUpdated;
         this.actions = actions;
         setMotionEventSplittingEnabled(true);
+        setClipChildren(false);
+        setClipToPadding(false);
         setClipChildren(false);
         setClipToPadding(false);
 
@@ -695,6 +698,16 @@ final class SessionControls extends FrameLayout {
         keyboard.updateInsets(height, visible, navigation);
     }
 
+    void setSafeHorizontalInsets(int leftPx, int rightPx) {
+        int nextLeft = Math.max(0, leftPx);
+        int nextRight = Math.max(0, rightPx);
+        if (safeLeftPx == nextLeft && safeRightPx == nextRight) return;
+        safeLeftPx = nextLeft;
+        safeRightPx = nextRight;
+        keyboard.setSafeHorizontalPadding(safeLeftPx, safeRightPx);
+        if (keyboard.isOpen()) requestLayout();
+    }
+
     void toggleKeyboard() {
         if (viewOnly) return;
         closeDrawer();
@@ -733,17 +746,28 @@ final class SessionControls extends FrameLayout {
             LayoutParams p = (LayoutParams) keyboard.getLayoutParams();
             int height = keyboard.preferredHeight();
             int inset = keyboard.bottomInset();
-            if (p.height != height || p.bottomMargin != inset) {
+            int fullW = getMeasuredWidth() + safeLeftPx + safeRightPx;
+            if (p.height != height || p.bottomMargin != inset || p.width != fullW) {
+                p.width = fullW;
                 p.height = height;
                 p.bottomMargin = inset;
                 resized = true;
             }
         }
         if (resized) super.onMeasure(widthSpec, heightSpec);
+        if (keyboard.isOpen() && (safeLeftPx > 0 || safeRightPx > 0)) {
+            int fullW = getMeasuredWidth() + safeLeftPx + safeRightPx;
+            keyboard.measure(
+                    MeasureSpec.makeMeasureSpec(fullW, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(keyboard.preferredHeight(), MeasureSpec.EXACTLY));
+        }
     }
 
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
+        if (keyboard.isOpen() && (safeLeftPx > 0 || safeRightPx > 0)) {
+            keyboard.layout(-safeLeftPx, keyboard.getTop(), getWidth() + safeRightPx, keyboard.getBottom());
+        }
         keyboardInsetChanged.accept(keyboard.isOpen() ? getHeight() - keyboard.getTop() : 0);
         positionEdgeDock();
         positionMouse();
