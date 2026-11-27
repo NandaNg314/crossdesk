@@ -145,8 +145,12 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         settingsUpdateDot=null;aboutUpdateDot=null;settingsUpdateButton=null;aboutUpdateRow=null;aboutUpdateLabel=null;
         previewSwitch=null;clearPreviewsButton=null;previewCleanupError=null;previewCards.clear();recentGrid=null;
         canvas=new FrameLayout(this);canvas.setBackgroundColor(dark?Color.BLACK:BACKGROUND);
-        safeArea=new FrameLayout(this);safeArea.setMotionEventSplittingEnabled(true);canvas.addView(safeArea,new FrameLayout.LayoutParams(-1,-1));
+        canvas.setClipChildren(false);canvas.setClipToPadding(false);
+        safeArea=new FrameLayout(this);safeArea.setMotionEventSplittingEnabled(true);
+        safeArea.setClipChildren(false);safeArea.setClipToPadding(false);
+        canvas.addView(safeArea,new FrameLayout.LayoutParams(-1,-1));
         root=ui.pageColumn(dark?0:nextPage.equals("home")?1200:720);root.setMotionEventSplittingEnabled(true);
+        root.setClipChildren(false);root.setClipToPadding(false);
         safeArea.addView(root,new FrameLayout.LayoutParams(-1,-1,Gravity.TOP|Gravity.CENTER_HORIZONTAL));
         safeArea.setOnApplyWindowInsetsListener((view,insets)->{
             if(dark&&(pictureInPictureUi||isInPictureInPictureMode())){view.setPadding(0,0,0,0);return insets;}

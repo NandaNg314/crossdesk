@@ -11,6 +11,8 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
+import android.os.SystemClock;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -21,28 +23,32 @@ import android.widget.FrameLayout;
 /**
  * UU Remote-style two-state floating virtual mouse:
  * 1) Collapsed (44x44 dp): Draggable dark translucent badge with crisp white filled mouse icon.
- * 2) Expanded (140x170 dp): High-craft Canvas vector ergonomic top-down mouse coupled to the
- *    desktop cursor arrow:
- *    - Upper Left / Right sculpted click plates with 4.5dp zero-jitter deadzone + coupled drag
+ * 2) Expanded (98x114 dp body + exterior 24x24 dp close badge): Compact ergonomic top-down mouse
+ *    rigidly coupled to the desktop cursor arrow (can smoothly slide off-screen at edges):
+ *    - Upper Left / Right sculpted click plates with 4.0dp zero-jitter deadzone + coupled drag
  *    - Center stadium Scroll Wheel (tap up/down + continuous swipe with fractional accumulator)
- *    - Center Middle button ("=" pill straddling seam: tap middle click, hold+slide middle drag)
+ *    - Center Middle button ("=" pill straddling seam: tap middle click, hold+slide smooth move)
  *    - Lower curved Palm zone: moves BOTH virtual mouse and remote pointer cursor together
- *    - Top-right floating circular "x" collapse badge
+ *    - Exterior top-right circular "x" collapse badge (zero overlap with Right-Click plate)
  */
 @SuppressLint("ViewConstructor")
 final class VirtualMouseBar extends FrameLayout {
     static final int COLLAPSED_SIZE_DP = 44;
-    static final int BODY_WIDTH_DP = 130;
-    static final int BODY_HEIGHT_DP = 164;
-    static final int CLOSE_BADGE_DP = 26;
-    static final int TOP_OVERHANG_DP = 6;
-    static final int RIGHT_OVERHANG_DP = 10;
+    static final int BODY_WIDTH_DP = 98;
+    static final int BODY_HEIGHT_DP = 114;
+    static final int CLOSE_BADGE_DP = 24;
+    static final int TOP_OVERHANG_DP = 0;
+    static final int RIGHT_OVERHANG_DP = 28; // 4dp gap + 24dp badge outside right shoulder
     static final int EXPANDED_WIDTH_DP = BODY_WIDTH_DP + RIGHT_OVERHANG_DP;
     static final int EXPANDED_HEIGHT_DP = BODY_HEIGHT_DP + TOP_OVERHANG_DP;
 
-    // Cursor arrow tip sits just off the upper-left shoulder of the expanded mouse body.
-    static final float COUPLED_OFFSET_X_DP = 20f;
-    static final float COUPLED_OFFSET_Y_DP = -TOP_OVERHANG_DP;
+    // Cursor arrow tip sits cleanly off the upper-left shoulder of the expanded mouse body.
+    static final float COUPLED_OFFSET_X_DP = 18f;
+    static final float COUPLED_OFFSET_Y_DP = -2f;
+
+    private static final float EDGE_GLIDE_ZONE_DP = 16f;
+    private static final float EDGE_GLIDE_MIN_TRAVEL_DP = 14f;
+    private static final float EDGE_GLIDE_DP_PER_MS = 0.58f;
 
     // Keep legacy constants mapped to expanded dimensions.
     static final int WIDTH_DP = EXPANDED_WIDTH_DP;
@@ -66,6 +72,34 @@ final class VirtualMouseBar extends FrameLayout {
     private int generation;
     private int activeStationaryButtons;
 
+    // Physical bezel edge auto-glide when user's thumb runs out of screen glass while dragging
+    private boolean edgeGlideActive;
+    private boolean edgeGlideButtonMode;
+    private float edgeGlideVx, edgeGlideVy;
+    private long edgeGlideLastMs;
+    private final Runnable edgeGlideTick = new Runnable() {
+        @Override public void run() {
+            if (!edgeGlideActive || !expanded || !isAttachedToWindow()) {
+                edgeGlideActive = false;
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            long dt = Math.max(8L, Math.min(32L, now - edgeGlideLastMs));
+            edgeGlideLastMs = now;
+            float stepBase = EDGE_GLIDE_DP_PER_MS * density * dt;
+            float dx = edgeGlideVx * stepBase;
+            float dy = edgeGlideVy * stepBase;
+            if (dx != 0f || dy != 0f) {
+                if (edgeGlideButtonMode) {
+                    input.virtualMouseDrag(dx, dy, dt);
+                } else {
+                    input.virtualMouseMove(dx, dy, dt);
+                }
+            }
+            postOnAnimation(this);
+        }
+    };
+
     VirtualMouseBar(MobileUi ui, RemoteMouseInput input) {
         super(ui.context);
         this.ui = ui;
@@ -87,7 +121,7 @@ final class VirtualMouseBar extends FrameLayout {
         attachCollapsedDragAndTap(collapsedButton, () -> setExpanded(true));
         addView(collapsedButton, new LayoutParams(ui.dp(COLLAPSED_SIZE_DP), ui.dp(COLLAPSED_SIZE_DP)));
 
-        // 2. Expanded sculpted mouse container (140x170 dp including top-right close badge)
+        // 2. Expanded compact UU-proportioned mouse container (98x114 dp body + exterior close badge)
         expandedShell = new FrameLayout(ui.context);
         expandedShell.setMotionEventSplittingEnabled(true);
         expandedShell.setClipChildren(false);
@@ -124,39 +158,41 @@ final class VirtualMouseBar extends FrameLayout {
         palmLp.topMargin = seamY;
         bodyContainer.addView(dragHandle, palmLp);
 
-        // Center Scroll Wheel hit area (generous 34x52 dp touch target over 25x48 dp pill)
+        // Center Scroll Wheel hit area (30x42 dp over 20x36 dp pill)
         View wheelTouch = createWheelTouchZone();
-        LayoutParams wheelLp = new LayoutParams(ui.dp(34), ui.dp(52), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        wheelLp.topMargin = ui.dp(10);
+        LayoutParams wheelLp = new LayoutParams(ui.dp(30), ui.dp(42), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        wheelLp.topMargin = ui.dp(6);
         bodyContainer.addView(wheelTouch, wheelLp);
 
         // Center Middle ("=") button hit area straddling the horizontal seam
         View middleTouch = createMiddleTouchZone();
-        LayoutParams midLp = new LayoutParams(ui.dp(34), ui.dp(33), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        midLp.topMargin = seamY - ui.dp(16.5f);
+        LayoutParams midLp = new LayoutParams(ui.dp(30), ui.dp(26), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        midLp.topMargin = seamY - ui.dp(13);
         bodyContainer.addView(middleTouch, midLp);
 
         LayoutParams bodyLp = new LayoutParams(bodyW, bodyH, Gravity.TOP | Gravity.LEFT);
         bodyLp.topMargin = topInset;
         expandedShell.addView(bodyContainer, bodyLp);
 
-        // Floating circular close ("x") button at top-right outside shoulder
+        // Exterior circular close ("x") button cleanly outside the right shoulder (zero overlap with Right-Click)
         FrameLayout collapseBtn = new FrameLayout(ui.context);
-        GradientDrawable closeBg = ui.background(0xBD22252D, 13);
-        closeBg.setStroke(Math.max(1, ui.dp(0.9f)), 0x42FFFFFF);
+        GradientDrawable closeBg = ui.background(0xC622252D, 12);
+        closeBg.setStroke(Math.max(1, ui.dp(0.9f)), 0x45FFFFFF);
         collapseBtn.setBackground(closeBg);
         collapseBtn.setElevation(ui.dp(10));
         collapseBtn.setContentDescription(L10n.tr("收起虚拟鼠标"));
         collapseBtn.setClickable(true);
         collapseBtn.setFocusable(true);
         collapseBtn.addView(ui.icon("close", 0xFFF2F4F8),
-                new LayoutParams(ui.dp(13), ui.dp(13), Gravity.CENTER));
+                new LayoutParams(ui.dp(12), ui.dp(12), Gravity.CENTER));
         collapseBtn.setOnClickListener(v -> {
             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             cancelInput();
             setExpanded(false);
         });
-        LayoutParams closeLp = new LayoutParams(ui.dp(CLOSE_BADGE_DP), ui.dp(CLOSE_BADGE_DP), Gravity.TOP | Gravity.RIGHT);
+        LayoutParams closeLp = new LayoutParams(ui.dp(CLOSE_BADGE_DP), ui.dp(CLOSE_BADGE_DP), Gravity.TOP | Gravity.LEFT);
+        closeLp.leftMargin = bodyW + ui.dp(4);
+        closeLp.topMargin = ui.dp(6);
         expandedShell.addView(collapseBtn, closeLp);
 
         addView(expandedShell, new LayoutParams(ui.dp(EXPANDED_WIDTH_DP), ui.dp(EXPANDED_HEIGHT_DP)));
@@ -264,11 +300,60 @@ final class VirtualMouseBar extends FrameLayout {
         });
     }
 
+    private void updateEdgeGlide(float rx, float ry, float downRx, float downRy, boolean buttonMode) {
+        DisplayMetrics dm = ui.context.getResources().getDisplayMetrics();
+        int sw = dm.widthPixels;
+        int sh = dm.heightPixels;
+        if (sw <= 0 || sh <= 0) {
+            stopEdgeGlide();
+            return;
+        }
+        float minTravelPx = EDGE_GLIDE_MIN_TRAVEL_DP * density;
+        if (Math.hypot(rx - downRx, ry - downRy) < minTravelPx) {
+            stopEdgeGlide();
+            return;
+        }
+        float zonePx = EDGE_GLIDE_ZONE_DP * density;
+        float vx = 0f;
+        float vy = 0f;
+        if (rx <= zonePx && (rx - downRx) < -minTravelPx * 0.4f) {
+            vx = -Math.min(1f, (zonePx - Math.max(0f, rx)) / zonePx + 0.35f);
+        } else if (rx >= sw - zonePx && (rx - downRx) > minTravelPx * 0.4f) {
+            vx = Math.min(1f, (Math.min(sw, rx) - (sw - zonePx)) / zonePx + 0.35f);
+        }
+        if (ry <= zonePx && (ry - downRy) < -minTravelPx * 0.4f) {
+            vy = -Math.min(1f, (zonePx - Math.max(0f, ry)) / zonePx + 0.35f);
+        } else if (ry >= sh - zonePx && (ry - downRy) > minTravelPx * 0.4f) {
+            vy = Math.min(1f, (Math.min(sh, ry) - (sh - zonePx)) / zonePx + 0.35f);
+        }
+        if (vx == 0f && vy == 0f) {
+            stopEdgeGlide();
+            return;
+        }
+        edgeGlideVx = vx;
+        edgeGlideVy = vy;
+        edgeGlideButtonMode = buttonMode;
+        if (!edgeGlideActive) {
+            edgeGlideActive = true;
+            edgeGlideLastMs = SystemClock.uptimeMillis();
+            postOnAnimation(edgeGlideTick);
+        }
+    }
+
+    private void stopEdgeGlide() {
+        if (edgeGlideActive) {
+            edgeGlideActive = false;
+            removeCallbacks(edgeGlideTick);
+        }
+        edgeGlideVx = 0f;
+        edgeGlideVy = 0f;
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private void attachCoupledPalmDrag(View palm) {
         palm.setClickable(true);
         palm.setFocusable(true);
-        float slop = 1.5f * density;
+        float slop = 1.2f * density;
         palm.setOnTouchListener(new OnTouchListener() {
             int pointer = -1, startedGen;
             float downRawX, downRawY, lastRawX, lastRawY;
@@ -278,6 +363,7 @@ final class VirtualMouseBar extends FrameLayout {
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int action = event.getActionMasked();
                 if (action == MotionEvent.ACTION_DOWN) {
+                    stopEdgeGlide();
                     pointer = event.getPointerId(0);
                     startedGen = generation;
                     downRawX = lastRawX = rawX(v, event, 0);
@@ -297,7 +383,8 @@ final class VirtualMouseBar extends FrameLayout {
                         if (!draggingPalm) {
                             if (Math.hypot(rx - downRawX, ry - downRawY) >= slop) {
                                 draggingPalm = true;
-                                input.virtualMouseMove(rx - downRawX, ry - downRawY, now - lastTimeMs);
+                                input.virtualMouseMove(rx - downRawX, ry - downRawY,
+                                        (long) PointerBallistics.FALLBACK_DT_MS);
                                 lastRawX = rx;
                                 lastRawY = ry;
                                 lastTimeMs = now;
@@ -311,6 +398,7 @@ final class VirtualMouseBar extends FrameLayout {
                                 lastRawY = ry;
                                 lastTimeMs = now;
                             }
+                            updateEdgeGlide(rx, ry, downRawX, downRawY, false);
                         }
                     }
                     return true;
@@ -318,6 +406,7 @@ final class VirtualMouseBar extends FrameLayout {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                         || (action == MotionEvent.ACTION_POINTER_UP
                         && event.getPointerId(event.getActionIndex()) == pointer)) {
+                    stopEdgeGlide();
                     pointer = -1;
                     draggingPalm = false;
                     silhouetteView.setPalmActive(false);
@@ -342,18 +431,19 @@ final class VirtualMouseBar extends FrameLayout {
         plate.setOnTouchListener(new OnTouchListener() {
             int pointer = -1, startedGen;
             float downRawX, downRawY, lastRawX, lastRawY;
-            long downTimeMs, lastTimeMs;
+            long lastTimeMs;
             boolean dragUnlocked;
             boolean countedStationary;
 
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int action = event.getActionMasked();
                 if (action == MotionEvent.ACTION_DOWN) {
+                    stopEdgeGlide();
                     pointer = event.getPointerId(0);
                     startedGen = generation;
                     downRawX = lastRawX = rawX(v, event, 0);
                     downRawY = lastRawY = rawY(v, event, 0);
-                    downTimeMs = lastTimeMs = event.getEventTime();
+                    lastTimeMs = event.getEventTime();
                     dragUnlocked = false;
                     countedStationary = true;
                     activeStationaryButtons++;
@@ -380,7 +470,8 @@ final class VirtualMouseBar extends FrameLayout {
                                 activeStationaryButtons = Math.max(0, activeStationaryButtons - 1);
                             }
                             float ratio = Math.max(0f, (dist - deadzonePx) / Math.max(0.001f, dist));
-                            input.virtualMouseDrag((rx - downRawX) * ratio, (ry - downRawY) * ratio);
+                            input.virtualMouseDrag((rx - downRawX) * ratio, (ry - downRawY) * ratio,
+                                    (long) PointerBallistics.FALLBACK_DT_MS);
                             lastRawX = rx;
                             lastRawY = ry;
                             lastTimeMs = now;
@@ -388,11 +479,12 @@ final class VirtualMouseBar extends FrameLayout {
                             float dx = rx - lastRawX;
                             float dy = ry - lastRawY;
                             if (dx != 0f || dy != 0f) {
-                                input.virtualMouseDrag(dx, dy);
+                                input.virtualMouseDrag(dx, dy, now - lastTimeMs);
                                 lastRawX = rx;
                                 lastRawY = ry;
                                 lastTimeMs = now;
                             }
+                            updateEdgeGlide(rx, ry, downRawX, downRawY, true);
                         }
                     }
                     return true;
@@ -400,6 +492,7 @@ final class VirtualMouseBar extends FrameLayout {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                         || (action == MotionEvent.ACTION_POINTER_UP
                         && event.getPointerId(event.getActionIndex()) == pointer)) {
+                    stopEdgeGlide();
                     pointer = -1;
                     dragUnlocked = false;
                     if (countedStationary) {
@@ -436,6 +529,7 @@ final class VirtualMouseBar extends FrameLayout {
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int action = event.getActionMasked();
                 if (action == MotionEvent.ACTION_DOWN) {
+                    stopEdgeGlide();
                     pointer = event.getPointerId(0);
                     startedGen = generation;
                     downRawX = lastRawX = rawX(v, event, 0);
@@ -460,7 +554,8 @@ final class VirtualMouseBar extends FrameLayout {
                             silhouetteView.setButtonPressed(RemoteMouseInput.BUTTON_MIDDLE, false);
                             silhouetteView.setPalmActive(true);
                             float ratio = Math.max(0f, (dist - deadzonePx) / Math.max(0.001f, dist));
-                            input.virtualMouseMove((rx - downRawX) * ratio, (ry - downRawY) * ratio, now - lastTimeMs);
+                            input.virtualMouseMove((rx - downRawX) * ratio, (ry - downRawY) * ratio,
+                                    (long) PointerBallistics.FALLBACK_DT_MS);
                             lastRawX = rx;
                             lastRawY = ry;
                             lastTimeMs = now;
@@ -473,6 +568,7 @@ final class VirtualMouseBar extends FrameLayout {
                                 lastRawY = ry;
                                 lastTimeMs = now;
                             }
+                            updateEdgeGlide(rx, ry, downRawX, downRawY, false);
                         }
                     }
                     return true;
@@ -480,6 +576,7 @@ final class VirtualMouseBar extends FrameLayout {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
                         || (action == MotionEvent.ACTION_POINTER_UP
                         && event.getPointerId(event.getActionIndex()) == pointer)) {
+                    stopEdgeGlide();
                     boolean tapMiddle = action == MotionEvent.ACTION_UP && !movedGrip;
                     pointer = -1;
                     movedGrip = false;
@@ -506,7 +603,7 @@ final class VirtualMouseBar extends FrameLayout {
         wheel.setOnClickListener(v -> input.scroll(1));
 
         int touchSlop = ViewConfiguration.get(ui.context).getScaledTouchSlop();
-        float stepPx = 12.5f * density;
+        float stepPx = 10.5f * density;
         PointerBallistics.ScrollAccumulator wheelAccumulator = new PointerBallistics.ScrollAccumulator();
 
         wheel.setOnTouchListener(new OnTouchListener() {
@@ -566,10 +663,12 @@ final class VirtualMouseBar extends FrameLayout {
     }
 
     void cancelInput() {
+        stopEdgeGlide();
         input.releaseAll();
     }
 
     private void resetTouches() {
+        stopEdgeGlide();
         generation++;
         activeStationaryButtons = 0;
         silhouetteView.resetAll();
@@ -680,12 +779,12 @@ final class VirtualMouseBar extends FrameLayout {
             float h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float stroke = 2.0f * density;
+            float stroke = 1.9f * density;
             float inset = stroke * 0.5f + 0.5f * density;
             bodyRect.set(inset, inset, w - inset, h - inset);
 
-            float rTop = 45f * density;
-            float rBot = 49f * density;
+            float rTop = 37f * density;
+            float rBot = 40f * density;
             float[] radii = {rTop, rTop, rTop, rTop, rBot, rBot, rBot, rBot};
             bodyPath.reset();
             bodyPath.addRoundRect(bodyRect, radii, Path.Direction.CW);
@@ -744,10 +843,10 @@ final class VirtualMouseBar extends FrameLayout {
             paint.setColor(0xFF7B8596);
             canvas.drawPath(bodyPath, paint);
 
-            // 5. Center Scroll Wheel stadium pill (25 x 48 dp)
-            float wheelW = 25f * density;
-            float wheelH = 48f * density;
-            float wheelTop = 12.5f * density;
+            // 5. Center Scroll Wheel stadium pill (20 x 36 dp)
+            float wheelW = 20f * density;
+            float wheelH = 36f * density;
+            float wheelTop = 9.0f * density;
             wheelRect.set(cx - wheelW * 0.5f, wheelTop, cx + wheelW * 0.5f, wheelTop + wheelH);
             float wheelR = wheelW * 0.5f;
 
@@ -756,16 +855,16 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawRoundRect(wheelRect, wheelR, wheelR, paint);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.55f * density);
+            paint.setStrokeWidth(1.45f * density);
             paint.setColor(wheelActive ? MobileUi.BLUE : 0xFF8891A2);
             canvas.drawRoundRect(wheelRect, wheelR, wheelR, paint);
 
             // Solid upward & downward triangles + center pivot dot inside wheel
             paint.setStyle(Paint.Style.FILL);
-            float triHalfW = 3.6f * density;
-            float triH = 4.6f * density;
+            float triHalfW = 3.0f * density;
+            float triH = 3.8f * density;
 
-            float upTipY = wheelRect.top + 8.5f * density;
+            float upTipY = wheelRect.top + 6.4f * density;
             paint.setColor(wheelActive && wheelDir > 0 ? MobileUi.BLUE : 0xFF768092);
             triPath.reset();
             triPath.moveTo(cx, upTipY);
@@ -775,9 +874,9 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawPath(triPath, paint);
 
             paint.setColor(0xFF9AA3B3);
-            canvas.drawCircle(cx, wheelRect.centerY(), 1.6f * density, paint);
+            canvas.drawCircle(cx, wheelRect.centerY(), 1.35f * density, paint);
 
-            float downTipY = wheelRect.bottom - 8.5f * density;
+            float downTipY = wheelRect.bottom - 6.4f * density;
             paint.setColor(wheelActive && wheelDir < 0 ? MobileUi.BLUE : 0xFF768092);
             triPath.reset();
             triPath.moveTo(cx, downTipY);
@@ -787,26 +886,26 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawPath(triPath, paint);
 
             // 6. Center Middle ("=") pill straddling the horizontal seam
-            float midW = 25f * density;
-            float midH = 28f * density;
+            float midW = 20f * density;
+            float midH = 21f * density;
             midRect.set(cx - midW * 0.5f, seamY - midH * 0.5f, cx + midW * 0.5f, seamY + midH * 0.5f);
-            float midR = 9.5f * density;
+            float midR = 7.5f * density;
 
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(middlePressed ? MobileUi.BLUE : 0xFFF4F7FD);
             canvas.drawRoundRect(midRect, midR, midR, paint);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.55f * density);
+            paint.setStrokeWidth(1.45f * density);
             paint.setColor(middlePressed ? 0xFF1F61C7 : 0xFF8891A2);
             canvas.drawRoundRect(midRect, midR, midR, paint);
 
             // Dual parallel "=" strokes
             paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeWidth(1.8f * density);
+            paint.setStrokeWidth(1.65f * density);
             paint.setColor(middlePressed ? Color.WHITE : 0xFF768092);
-            float eqHalfW = 4.3f * density;
-            float eqGap = 2.3f * density;
+            float eqHalfW = 3.5f * density;
+            float eqGap = 1.9f * density;
             canvas.drawLine(cx - eqHalfW, seamY - eqGap, cx + eqHalfW, seamY - eqGap, paint);
             canvas.drawLine(cx - eqHalfW, seamY + eqGap, cx + eqHalfW, seamY + eqGap, paint);
         }

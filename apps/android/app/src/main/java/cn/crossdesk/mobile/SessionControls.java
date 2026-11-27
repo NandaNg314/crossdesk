@@ -464,9 +464,6 @@ final class SessionControls extends FrameLayout {
         lastCursorX = cursorPx;
         lastCursorY = cursorPy;
         if (mouseBar != null && mouseBar.isExpanded() && mouseVisible) {
-            if (fromScreenTouch && mouseBar.isStationaryButtonHold()) {
-                return;
-            }
             positionMouse();
         }
     }
@@ -605,15 +602,16 @@ final class SessionControls extends FrameLayout {
         }
 
         if (mouseBar.isExpanded()) {
-            // Coupled mode: dock the sculpted mouse right off the cursor arrow's lower-right shoulder.
+            // Coupled mode (UU Remote-aligned): rigidly anchor the sculpted mouse beside the cursor arrow,
+            // allowing the mouse body to slide smoothly past screen edges without covering the cursor or taskbar.
             float cx = Float.isNaN(lastCursorX) ? w * 0.5f : lastCursorX;
             float cy = Float.isNaN(lastCursorY) ? h * 0.5f : lastCursorY;
-            float clampedX = PointerBallistics.coupledMouseCoord(
-                    cx, ui.dp(VirtualMouseBar.COUPLED_OFFSET_X_DP), barW, margin, w - margin);
-            float clampedY = PointerBallistics.coupledMouseCoord(
-                    cy, ui.dp(VirtualMouseBar.COUPLED_OFFSET_Y_DP), barH, margin, maxBottomLimit);
-            mouseBar.setTranslationX(clampedX);
-            mouseBar.setTranslationY(clampedY);
+            float coupledX = PointerBallistics.coupledMouseCoord(
+                    cx, ui.dp(VirtualMouseBar.COUPLED_OFFSET_X_DP));
+            float coupledY = PointerBallistics.coupledMouseCoord(
+                    cy, ui.dp(VirtualMouseBar.COUPLED_OFFSET_Y_DP));
+            mouseBar.setTranslationX(coupledX);
+            mouseBar.setTranslationY(coupledY);
             mouseBar.setVisibility(VISIBLE);
         } else {
             // Collapsed mini mouse badge: park at user's chosen spot (default: right margin beside dock).

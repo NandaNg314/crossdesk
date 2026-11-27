@@ -141,7 +141,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
             return;
         }
         if (!relative) {
-            if (!directTouchValid || !viewport.contains(downX, downY)) return;
+            if (!directTouchValid || !containsWithEdgeTolerance(downX, downY)) return;
             x = viewport.normalizedX(downX);
             y = viewport.normalizedY(downY);
             mouseInput.move(x, y);
@@ -382,13 +382,29 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
     }
 
     private float smoothedSpeedDpPerMs;
+    private float palmSpeedDpPerMs;
 
-    private void moveDirectScreenDelta(float dxPx, float dyPx) {
+    private boolean containsWithEdgeTolerance(float px, float py) {
+        if (viewport.width() <= 0 || viewport.height() <= 0) return false;
+        float tol = 16f * density;
+        return px >= viewport.left() - tol && px <= viewport.left() + viewport.width() + tol
+                && py >= viewport.top() - tol && py <= viewport.top() + viewport.height() + tol;
+    }
+
+    private void moveDirectScreenDelta(float dxPx, float dyPx, long dtMs) {
         if (pictureInPicture || viewport.width() <= 0 || viewport.height() <= 0) return;
         if (!Float.isFinite(dxPx) || !Float.isFinite(dyPx) || (dxPx == 0f && dyPx == 0f)) return;
-        float nextX = Math.max(0f, Math.min(1f, x + dxPx / viewport.width()));
-        float nextY = Math.max(0f, Math.min(1f, y + dyPx / viewport.height()));
-        viewport.panForPointer(nextX, nextY, y, dyPx, 18f * density);
+        float safeDensity = density > 0f ? density : 1f;
+        if (dtMs > 85L) palmSpeedDpPerMs = 0f;
+        float distDp = (float) Math.hypot(dxPx, dyPx) / safeDensity;
+        palmSpeedDpPerMs = PointerBallistics.smoothSpeedDpPerMs(palmSpeedDpPerMs, distDp, dtMs);
+        float mult = PointerBallistics.palmDragMultiplier(
+                palmSpeedDpPerMs, pointerSensitivity, pointerAcceleration);
+        float scaledDx = dxPx * mult;
+        float scaledDy = dyPx * mult;
+        float nextX = Math.max(0f, Math.min(1f, x + scaledDx / viewport.width()));
+        float nextY = Math.max(0f, Math.min(1f, y + scaledDy / viewport.height()));
+        viewport.panForPointer(nextX, nextY, y, scaledDy, 18f * density);
         applyViewport();
         mouseInput.move(nextX, nextY);
         notifyCursorPosition(false);
@@ -399,6 +415,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
         if (pictureInPicture || viewport.width() <= 0 || viewport.height() <= 0) return;
         if (!Float.isFinite(rawDx) || !Float.isFinite(rawDy) || (rawDx == 0f && rawDy == 0f)) return;
         float safeDensity = density > 0f ? density : 1f;
+        if (dtMs > 85L) smoothedSpeedDpPerMs = 0f;
         float distDp = (float) Math.hypot(rawDx, rawDy) / safeDensity;
         smoothedSpeedDpPerMs = PointerBallistics.smoothSpeedDpPerMs(smoothedSpeedDpPerMs, distDp, dtMs);
         float mult = PointerBallistics.effectiveMultiplierForSpeed(
@@ -595,8 +612,9 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
             downY = lastY = e.getY();
             downTimeMs = lastMoveTimeMs = e.getEventTime();
             smoothedSpeedDpPerMs = 0f;
+            palmSpeedDpPerMs = 0f;
             relativeMoveUnlocked = false;
-            directTouchValid = viewport.contains(downX, downY);
+            directTouchValid = containsWithEdgeTolerance(downX, downY);
             onPointerActivity();
 
             if (!viewOnly) {
@@ -721,7 +739,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
                     float excessRatio = Math.max(0f, (distFromDown - deadzonePx) / Math.max(0.001f, distFromDown));
                     float stepDx = (px - downX) * excessRatio;
                     float stepDy = (py - downY) * excessRatio;
-                    moveRelativeBallistic(stepDx, stepDy, nowMs - downTimeMs, true);
+                    moveRelativeBallistic(stepDx, stepDy, (long) PointerBallistics.FALLBACK_DT_MS, true);
                     lastX = px;
                     lastY = py;
                     lastMoveTimeMs = nowMs;
@@ -738,7 +756,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
             } else {
                 // Direct touch mode (屏幕触控)
                 if (suppressPointerGesture()) {
-                    if (directTouchValid || viewport.contains(px, py)) {
+                    if (directTouchValid || containsWithEdgeTolerance(px, py)) {
                         directTouchValid = true;
                         updateAbsoluteCursor(px, py, true, true);
                         lastMoveTimeMs = nowMs;
@@ -776,7 +794,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
                             && (e.getEventTime() - twoFingerDownTimeMs) <= TWO_FINGER_TAP_MAX_PAIR_MS) {
                         if (usesRelativeMotion(e)) {
                             fireRightClickWithFeedback();
-                        } else if (viewport.contains(twoFingerStartMidX, twoFingerStartMidY)) {
+                        } else if (containsWithEdgeTolerance(twoFingerStartMidX, twoFingerStartMidY)) {
                             updateAbsoluteCursor(twoFingerStartMidX, twoFingerStartMidY, false, true);
                             fireRightClickWithFeedback();
                         }
@@ -788,13 +806,18 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
                         if (!relativeMoveUnlocked && totalMove <= touchSlopPx) {
                             pulseCursor();
                             cursor.performClick();
-                            lastSingleTapUpTimeMs = e.getEventTime();
-                            lastSingleTapX = e.getX();
-                            lastSingleTapY = e.getY();
+                            if (tapDragCandidate) {
+                                // Second tap of a double-click completed; reset so a subsequent move doesn't drag!
+                                lastSingleTapUpTimeMs = 0L;
+                            } else {
+                                lastSingleTapUpTimeMs = e.getEventTime();
+                                lastSingleTapX = e.getX();
+                                lastSingleTapY = e.getY();
+                            }
                         } else {
                             lastSingleTapUpTimeMs = 0L;
                         }
-                    } else if (directTouchValid && totalMove <= touchSlopPx && viewport.contains(e.getX(), e.getY())) {
+                    } else if (directTouchValid && totalMove <= touchSlopPx && containsWithEdgeTolerance(e.getX(), e.getY())) {
                         updateAbsoluteCursor(e.getX(), e.getY(), false, true);
                         pulseCursor();
                         cursor.performClick();
