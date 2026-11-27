@@ -8,7 +8,7 @@ import android.content.SharedPreferences;
  */
 final class PointerBallistics {
     static final String KEY_RELATIVE_MOUSE = "relativeMouse";
-    static final String KEY_POINTER_SENSITIVITY = "pointerSensitivityV2";
+    static final String KEY_POINTER_SENSITIVITY = "pointerSensitivityV3";
     static final String KEY_POINTER_ACCELERATION = "pointerAcceleration";
     static final String KEY_NATURAL_SCROLL = "naturalScroll";
     static final String KEY_VIRTUAL_MOUSE_RELATIVE = "virtualMouseRelative";
@@ -26,26 +26,32 @@ final class PointerBallistics {
     static final int SLIDER_DEFAULT_PROGRESS = 15;
 
     // Base physical trackpad ratio at 100% user sensitivity, calibrated to UU Remote on 120/144Hz tablets.
-    static final float TRACKPAD_BASE_RATIO = 0.56f;
+    static final float TRACKPAD_BASE_RATIO = 0.80f;
     static final boolean DEFAULT_ACCELERATION = true;
     static final boolean DEFAULT_NATURAL_SCROLL = true;
 
-    static final float TAP_DEADZONE_DP = 2.5f;
-    static final float SLOW_NUDGE_DEADZONE_DP = 1.0f;
-    static final long TAP_STABILIZE_MS = 130L;
-    static final float VIRTUAL_BUTTON_DEADZONE_DP = 4.5f;
-    static final float SCROLL_STEP_DP = 13.0f;
+    static final float TAP_DEADZONE_DP = 2.0f;
+    static final float SLOW_NUDGE_DEADZONE_DP = 0.6f;
+    static final long TAP_STABILIZE_MS = 115L;
+    static final float VIRTUAL_BUTTON_DEADZONE_DP = 4.0f;
+    static final float SCROLL_STEP_DP = 12.5f;
 
     static final float MIN_DT_MS = 8f;
     static final float MAX_DT_MS = 50f;
     static final float FALLBACK_DT_MS = 16f;
-    static final float SPEED_EMA_ALPHA = 0.30f;
+    static final float SPEED_EMA_ALPHA = 0.42f;
 
-    private static final float SLOW_SPEED_DP_PER_MS = 0.30f;
-    private static final float FAST_SPEED_DP_PER_MS = 1.90f;
-    private static final float MIN_ACCEL_GAIN = 0.78f;
-    private static final float KNEE_ACCEL_GAIN = 0.92f;
-    private static final float MAX_ACCEL_GAIN = 1.65f;
+    private static final float SLOW_SPEED_DP_PER_MS = 0.22f;
+    private static final float CRUISE_SPEED_DP_PER_MS = 0.85f;
+    private static final float FAST_SPEED_DP_PER_MS = 2.15f;
+    private static final float MIN_ACCEL_GAIN = 0.72f;
+    private static final float KNEE_ACCEL_GAIN = 0.96f;
+    private static final float CRUISE_ACCEL_GAIN = 1.42f;
+    private static final float MAX_ACCEL_GAIN = 1.95f;
+
+    private static final float PALM_ASSIST_START_DP_PER_MS = 0.55f;
+    private static final float PALM_ASSIST_FAST_DP_PER_MS = 2.00f;
+    private static final float PALM_ASSIST_MAX_GAIN = 1.55f;
 
     private PointerBallistics() {}
 
@@ -75,22 +81,46 @@ final class PointerBallistics {
     }
 
     /**
-     * Velocity-adaptive pointer gain (applied on top of TRACKPAD_BASE_RATIO * sensitivity):
-     * - Below 0.30 dp/ms: 0.78x..0.92x calm precision for tiny close buttons & text carets.
-     * - 0.30..1.90 dp/ms: smooth Hermite ramp up to 1.65x (net ~0.92x at 100% sensitivity) for controlled flicks.
-     * - Clamped dt in [8ms, 50ms] prevents spikes on 144Hz/240Hz coalesced events.
+     * Three-stage velocity-adaptive pointer gain (applied on top of TRACKPAD_BASE_RATIO * sensitivity):
+     * - 0 .. 0.22 dp/ms: 0.72x..0.96x (net 0.58x..0.77x) sub-pixel precision for tiny buttons & text carets.
+     * - 0.22 .. 0.85 dp/ms: smooth Hermite ramp 0.96x..1.42x (crosses exact 1.0x finger tracking at ~0.52 dp/ms).
+     * - 0.85 .. 2.15 dp/ms: smooth Hermite ramp 1.42x..1.95x (net ~1.56x) for effortless cross-screen flicks.
      */
     static float accelerationGainFromSpeed(float speedDpPerMs) {
         if (!Float.isFinite(speedDpPerMs) || speedDpPerMs <= 0f) return MIN_ACCEL_GAIN;
         if (speedDpPerMs <= SLOW_SPEED_DP_PER_MS) {
             return MIN_ACCEL_GAIN + (speedDpPerMs / SLOW_SPEED_DP_PER_MS) * (KNEE_ACCEL_GAIN - MIN_ACCEL_GAIN);
         }
+        if (speedDpPerMs <= CRUISE_SPEED_DP_PER_MS) {
+            float t = (speedDpPerMs - SLOW_SPEED_DP_PER_MS) / (CRUISE_SPEED_DP_PER_MS - SLOW_SPEED_DP_PER_MS);
+            float smooth = t * t * (3f - 2f * t);
+            return KNEE_ACCEL_GAIN + smooth * (CRUISE_ACCEL_GAIN - KNEE_ACCEL_GAIN);
+        }
         if (speedDpPerMs >= FAST_SPEED_DP_PER_MS) {
             return MAX_ACCEL_GAIN;
         }
-        float t = (speedDpPerMs - SLOW_SPEED_DP_PER_MS) / (FAST_SPEED_DP_PER_MS - SLOW_SPEED_DP_PER_MS);
+        float t = (speedDpPerMs - CRUISE_SPEED_DP_PER_MS) / (FAST_SPEED_DP_PER_MS - CRUISE_SPEED_DP_PER_MS);
         float smooth = t * t * (3f - 2f * t);
-        return KNEE_ACCEL_GAIN + smooth * (MAX_ACCEL_GAIN - KNEE_ACCEL_GAIN);
+        return CRUISE_ACCEL_GAIN + smooth * (MAX_ACCEL_GAIN - CRUISE_ACCEL_GAIN);
+    }
+
+    /**
+     * Multiplier when dragging the coupled VirtualMouseBar directly:
+     * stays strictly 1.0x at slow/medium speeds so the mouse stays glued under the user's thumb,
+     * and gently assists brisk flicks up to 1.55x so one thumb can throw the mouse across wide tablets.
+     */
+    static float palmDragMultiplier(float speedDpPerMs, float sensitivity, boolean acceleration) {
+        float sensScale = 0.35f + 0.65f * clampSensitivity(sensitivity);
+        if (!acceleration || !Float.isFinite(speedDpPerMs) || speedDpPerMs <= PALM_ASSIST_START_DP_PER_MS) {
+            return 1.0f;
+        }
+        if (speedDpPerMs >= PALM_ASSIST_FAST_DP_PER_MS) {
+            return 1.0f + (PALM_ASSIST_MAX_GAIN - 1.0f) * sensScale;
+        }
+        float t = (speedDpPerMs - PALM_ASSIST_START_DP_PER_MS)
+                / (PALM_ASSIST_FAST_DP_PER_MS - PALM_ASSIST_START_DP_PER_MS);
+        float smooth = t * t * (3f - 2f * t);
+        return 1.0f + smooth * (PALM_ASSIST_MAX_GAIN - 1.0f) * sensScale;
     }
 
     static float accelerationGain(float distanceDp, long dtMs) {
@@ -125,14 +155,19 @@ final class PointerBallistics {
     }
 
     /**
-     * Computes coupled VirtualMouseBar top-left coordinates anchored beside the cursor hotspot
-     * while clamping cleanly inside container bounds so the cursor reaches all 4 screen corners.
+     * Computes coupled VirtualMouseBar top-left coordinates rigidly anchored beside the cursor hotspot.
+     * Like UU Remote, the virtual mouse body is NOT artificially trapped inside the screen borders:
+     * when the cursor reaches the right/bottom edges or taskbar, the mouse body smoothly slides
+     * partially or fully outside the screen edge so it never detaches from or covers the cursor tip.
      */
+    static float coupledMouseCoord(float cursorCoord, float offsetPx) {
+        if (!Float.isFinite(cursorCoord) || !Float.isFinite(offsetPx)) return 0f;
+        return cursorCoord + offsetPx;
+    }
+
     static float coupledMouseCoord(float cursorCoord, float offsetPx, float barSize,
                                    float minBound, float maxLimit) {
-        float upper = Math.max(minBound, maxLimit - barSize);
-        float target = cursorCoord + offsetPx;
-        return Math.max(minBound, Math.min(upper, target));
+        return coupledMouseCoord(cursorCoord, offsetPx);
     }
 
     static float loadSensitivity(SharedPreferences prefs) {

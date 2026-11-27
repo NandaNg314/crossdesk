@@ -113,23 +113,30 @@ public class ControllerTest {
         assertEquals(50f, PointerBallistics.clampDtMs(400L), 0.0001f);
         assertEquals(16f, PointerBallistics.clampDtMs(0L), 0.0001f);
 
-        // Slow precision crawl (< 0.30 dp/ms) stays in [0.78, 0.92]
+        // Slow precision crawl (< 0.22 dp/ms) stays in [0.72, 0.96]
         float slowGain = PointerBallistics.accelerationGain(1.2f, 16L); // 0.075 dp/ms
-        assertTrue("Slow finger speed should retain damped sub-1.0 precision gain", slowGain >= 0.78f && slowGain <= 0.92f);
+        assertTrue("Slow finger speed should retain damped sub-1.0 precision gain", slowGain >= 0.72f && slowGain <= 0.96f);
 
-        // Fast flick (> 1.90 dp/ms) ramps smoothly up to 1.65x cap (net ~0.92x at 100% sensitivity)
+        // Normal cruise (~0.55 dp/ms) crosses 1.0x net multiplier; fast flick (> 2.15 dp/ms) ramps smoothly to 1.95x
         float midGain = PointerBallistics.accelerationGain(12f, 16L); // 0.75 dp/ms
-        float fastGain = PointerBallistics.accelerationGain(36f, 16L); // 2.25 dp/ms -> 1.65x
+        float fastGain = PointerBallistics.accelerationGain(36f, 16L); // 2.25 dp/ms -> 1.95x
         assertTrue(midGain > slowGain && midGain < fastGain);
-        assertEquals(1.65f, fastGain, 0.0001f);
+        assertEquals(1.95f, fastGain, 0.0001f);
+        float cruiseNet = PointerBallistics.effectiveMultiplierForSpeed(0.60f, 1.0f, true);
+        assertTrue("Normal cruising speed should feel 1:1 responsive (~0.95x..1.15x)",
+                cruiseNet >= 0.95f && cruiseNet <= 1.15f);
+
+        // Palm drag stays 1.0x at slow speed and assists fast flicks up to 1.55x
+        assertEquals(1.0f, PointerBallistics.palmDragMultiplier(0.30f, 1.0f, true), 0.0001f);
+        assertEquals(1.55f, PointerBallistics.palmDragMultiplier(2.20f, 1.0f, true), 0.0001f);
 
         // EMA velocity smoothing prevents single-frame 144Hz bursts from spiking speed
         float smoothed = PointerBallistics.smoothSpeedDpPerMs(0.20f, 16f, 8L); // instant=2.0, prev=0.2
-        assertTrue("EMA should damp abrupt 1-frame spikes", smoothed < 0.85f);
+        assertTrue("EMA should damp abrupt 1-frame spikes", smoothed < 1.05f);
 
         // Dropped frame (dt = 250ms clamped to 50ms) never exceeds max cap
         float stalledGain = PointerBallistics.accelerationGain(120f, 250L);
-        assertTrue(stalledGain <= 1.65f);
+        assertTrue(stalledGain <= 1.95f);
 
         // Acceleration OFF uses exact linear TRACKPAD_BASE_RATIO * sensitivity multiplier
         float expectedDx = 10f * PointerBallistics.TRACKPAD_BASE_RATIO * 1.50f;
@@ -192,11 +199,11 @@ public class ControllerTest {
         assertEquals(2, (int) flags.get(flags.size() - 1));
     }
 
-    @Test public void coupledVirtualMouseClampingAndPerModeVisibility() {
-        // Coupled mouse stays offset by +40px normally, and clamps cleanly at right/left edges
-        assertEquals(540f, PointerBallistics.coupledMouseCoord(500f, 40f, 280f, 12f, 1908f), 0.001f);
-        assertEquals(1628f, PointerBallistics.coupledMouseCoord(1890f, 40f, 280f, 12f, 1908f), 0.001f);
-        assertEquals(12f, PointerBallistics.coupledMouseCoord(0f, -20f, 280f, 12f, 1908f), 0.001f);
+    @Test public void coupledVirtualMouseAllowsOffscreenEdgeTravelAndPerModeVisibility() {
+        // Coupled mouse stays rigidly offset from cursor hotspot even past right/bottom/left screen edges (UU-aligned)
+        assertEquals(540f, PointerBallistics.coupledMouseCoord(500f, 40f), 0.001f);
+        assertEquals(1930f, PointerBallistics.coupledMouseCoord(1890f, 40f, 280f, 12f, 1908f), 0.001f);
+        assertEquals(-20f, PointerBallistics.coupledMouseCoord(0f, -20f, 280f, 12f, 1908f), 0.001f);
 
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         var prefs = context.getSharedPreferences("mouse_test_prefs", Context.MODE_PRIVATE);

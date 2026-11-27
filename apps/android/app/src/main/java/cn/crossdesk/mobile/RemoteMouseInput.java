@@ -11,7 +11,7 @@ final class RemoteMouseInput {
 
     interface Sender { void send(float x, float y, int flag, int wheel); }
     interface RelativeMotion { void move(float dx, float dy, long dtMs); }
-    interface DirectPixelMotion { void movePixels(float dxPx, float dyPx); }
+    interface DirectPixelMotion { void movePixels(float dxPx, float dyPx, long dtMs); }
 
     RelativeMotion relativeMotion;
     DirectPixelMotion directPixelMotion;
@@ -43,14 +43,14 @@ final class RemoteMouseInput {
     }
 
     /**
-     * 1:1 physical finger-locked movement for the coupled VirtualMouseBar so the sculpted mouse
-     * stays glued underneath the user's thumb without ballistic overshoot.
+     * Finger-locked movement for the coupled VirtualMouseBar with gentle flick assist so the mouse
+     * stays glued under the user's thumb at normal speed and smoothly crosses wide tablets on flicks.
      */
     void virtualMouseMove(float dx, float dy, long dtMs) {
         if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
         if (viewportWidth <= 0 || viewportHeight <= 0) return;
         if (directPixelMotion != null) {
-            directPixelMotion.movePixels(dx, dy);
+            directPixelMotion.movePixels(dx, dy, dtMs);
         } else if (relativeMotion != null) {
             relativeMotion.move(dx, dy, dtMs);
         } else {
@@ -58,12 +58,16 @@ final class RemoteMouseInput {
         }
     }
 
-    /** 1:1 physical finger-locked drag when holding Left/Right plate directly on VirtualMouseBar. */
+    /** Finger-locked drag when holding Left/Right plate directly on VirtualMouseBar. */
     void virtualMouseDrag(float dx, float dy) {
+        virtualMouseDrag(dx, dy, (long) PointerBallistics.FALLBACK_DT_MS);
+    }
+
+    void virtualMouseDrag(float dx, float dy, long dtMs) {
         if (!hasVirtualButton() || viewportWidth <= 0 || viewportHeight <= 0) return;
         if (!Float.isFinite(dx) || !Float.isFinite(dy) || (dx == 0f && dy == 0f)) return;
         if (directPixelMotion != null) {
-            directPixelMotion.movePixels(dx, dy);
+            directPixelMotion.movePixels(dx, dy, dtMs);
         } else {
             move(x + dx / viewportWidth, y + dy / viewportHeight);
         }
