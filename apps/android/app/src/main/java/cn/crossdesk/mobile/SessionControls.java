@@ -120,6 +120,7 @@ final class SessionControls extends FrameLayout {
         dockPrefs = context.getSharedPreferences("session_dock_v1", Context.MODE_PRIVATE);
         settingsPrefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         dockRight = dockPrefs.getBoolean("dockRight", true);
+        dockCollapsed = dockPrefs.getBoolean("dockCollapsed", false);
         dockNormY = Math.max(0.08f, Math.min(0.88f, dockPrefs.getFloat("dockNormY", 0.28f)));
         relativeMode = settingsPrefs.getBoolean(PointerBallistics.KEY_RELATIVE_MOUSE, true);
         mouseVisible = PointerBallistics.loadVirtualMouseVisible(settingsPrefs, relativeMode);
@@ -131,6 +132,7 @@ final class SessionControls extends FrameLayout {
 
         keyboard = new RemoteKeyboard(context, ui, actions, () -> {
             requestLayout();
+            updateEdgeDockVisibility();
             positionMouse();
             positionEdgeDock();
         });
@@ -163,7 +165,7 @@ final class SessionControls extends FrameLayout {
         dockCollapseIcon = ui.icon("chevron_right", 0xFFD1D1D6);
         dockCollapseBtn.addView(dockCollapseIcon, new LayoutParams(ui.dp(14), ui.dp(14), Gravity.CENTER));
         attachDockDragAndTap(dockCollapseBtn, this::toggleDockCollapsed);
-        edgeDock.addView(dockCollapseBtn, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(22)));
+        edgeDock.addView(dockCollapseBtn, new LinearLayout.LayoutParams(ui.dp(42), ui.dp(20)));
 
         dockButtonsBox = ui.column();
         dockButtonsBox.addView(createDockAction("controls", L10n.tr("操作"), this::openDrawer));
@@ -199,15 +201,15 @@ final class SessionControls extends FrameLayout {
     private View createDockAction(String iconName, String title, Runnable action) {
         LinearLayout item = ui.column();
         item.setGravity(Gravity.CENTER);
-        item.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4));
-        item.addView(ui.icon(iconName, 0xFFF5F5F7), ui.size(17, 17));
+        item.setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3));
+        item.addView(ui.icon(iconName, 0xFFF5F5F7), ui.size(16, 16));
         ui.gap(item, 2);
         TextView label = ui.text(title, 9, false);
         label.setTextColor(0xFFE5E5EA);
         label.setSingleLine(true);
         label.setGravity(Gravity.CENTER);
         label.setAutoSizeTextTypeUniformWithConfiguration(7, 9, 1, TypedValue.COMPLEX_UNIT_SP);
-        item.addView(label, new LinearLayout.LayoutParams(ui.dp(42), ui.dp(12)));
+        item.addView(label, new LinearLayout.LayoutParams(ui.dp(38), ui.dp(12)));
         item.setContentDescription(title);
         attachDockDragAndTap(item, action);
         return item;
@@ -215,27 +217,33 @@ final class SessionControls extends FrameLayout {
 
     private void toggleDockCollapsed() {
         dockCollapsed = !dockCollapsed;
+        dockPrefs.edit().putBoolean("dockCollapsed", dockCollapsed).apply();
         styleEdgeDock();
         edgeDock.requestLayout();
         post(this::positionEdgeDock);
     }
 
+    private void updateEdgeDockVisibility() {
+        boolean hide = pictureInPicture || keymapEditor != null || keyboard.isOpen();
+        edgeDock.setVisibility(hide ? GONE : VISIBLE);
+    }
+
     private void styleEdgeDock() {
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(dockCollapsed ? 0xB818181D : 0xE018181D);
-        float r = ui.dp(dockCollapsed ? 11 : 14);
+        bg.setColor(dockCollapsed ? 0xA818181D : 0xC418181D);
+        float r = ui.dp(dockCollapsed ? 10 : 12);
         if (dockRight) {
             bg.setCornerRadii(new float[]{r, r, 0, 0, 0, 0, r, r});
         } else {
             bg.setCornerRadii(new float[]{0, 0, r, r, r, r, 0, 0});
         }
-        bg.setStroke(Math.max(1, ui.dp(0.8f)), 0x2BFFFFFF);
+        bg.setStroke(Math.max(1, ui.dp(0.8f)), 0x26FFFFFF);
         edgeDock.setBackground(bg);
 
         dockButtonsBox.setVisibility(dockCollapsed ? GONE : VISIBLE);
         LinearLayout.LayoutParams handleLp = (LinearLayout.LayoutParams) dockCollapseBtn.getLayoutParams();
-        handleLp.width = ui.dp(dockCollapsed ? 22 : 48);
-        handleLp.height = ui.dp(dockCollapsed ? 52 : 22);
+        handleLp.width = ui.dp(dockCollapsed ? 20 : 42);
+        handleLp.height = ui.dp(dockCollapsed ? 46 : 20);
         dockCollapseBtn.setLayoutParams(handleLp);
 
         String chevron = dockCollapsed
@@ -408,7 +416,7 @@ final class SessionControls extends FrameLayout {
                 });
         addView(keymapEditor, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         keymapEditor.bringToFront();
-        edgeDock.setVisibility(GONE);
+        updateEdgeDockVisibility();
         positionMouse();
         keymapUpdated.run();
     }
@@ -417,7 +425,7 @@ final class SessionControls extends FrameLayout {
         if (keymapEditor == null) return;
         removeView(keymapEditor);
         keymapEditor = null;
-        edgeDock.setVisibility(pictureInPicture ? GONE : VISIBLE);
+        updateEdgeDockVisibility();
         positionMouse();
         keymapUpdated.run();
     }
@@ -570,6 +578,7 @@ final class SessionControls extends FrameLayout {
             closeKeyboard();
         }
         setVisibility(value ? GONE : VISIBLE);
+        updateEdgeDockVisibility();
         positionMouse();
         keymapUpdated.run();
     }
