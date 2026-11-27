@@ -299,6 +299,28 @@ final class NativeSession implements AutoCloseable {
     }
     void surface(Surface value) { execute(() -> { surface = value; if (handle != 0) nSurface(handle, value); }); }
     void pointer(float x, float y, int flag, int wheel) { execute(() -> { if (connected) nPointer(handle, x, y, flag, wheel); }); }
+    private final android.os.Handler clipboardRestoreHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private volatile String hostClipboardSnapshot = "";
+    private volatile String lastImeClipboardText = "";
+    private volatile long lastImeClipboardAtMs;
+    private final Runnable restoreClipboardRunnable = () -> {
+        final String snapshot = hostClipboardSnapshot;
+        if (closed || !connected || handle == 0 || snapshot == null || snapshot.isEmpty()) return;
+        byte[] bytes = snapshot.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 64 * 1024) return;
+        execute(() -> {
+            if (!closed && connected && handle != 0) {
+                nClipboard(handle, bytes);
+            }
+        });
+    };
+
+    void setHostClipboardSnapshot(String value) {
+        if (value == null) return;
+        long age = android.os.SystemClock.uptimeMillis() - lastImeClipboardAtMs;
+        if (age < 1200L && value.equals(lastImeClipboardText)) return;
+        hostClipboardSnapshot = value;
+    }
     void key(int code, boolean down) {
         int normalized = KeyCatalog.normalizeVk(code);
         if (normalized <= 0) return;
@@ -354,8 +376,11 @@ final class NativeSession implements AutoCloseable {
             }
             if (bytes.length == 0) return;
             if (win && ordinaryDesktop) {
+                clipboardRestoreHandler.removeCallbacks(restoreClipboardRunnable);
+                lastImeClipboardText = text;
+                lastImeClipboardAtMs = android.os.SystemClock.uptimeMillis();
                 if (nClipboard(handle, bytes)) {
-                    try { Thread.sleep(32); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    try { Thread.sleep(22); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
                     if (!closed && connected && handle != 0) {
                         try {
                             nKey(handle, KeyCatalog.VK_LCONTROL, true);
@@ -365,7 +390,10 @@ final class NativeSession implements AutoCloseable {
                             nKey(handle, KeyCatalog.VK_LCONTROL, false);
                         }
                     }
-                    try { Thread.sleep(14); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    try { Thread.sleep(10); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    if (hostClipboardSnapshot != null && !hostClipboardSnapshot.isEmpty()) {
+                        clipboardRestoreHandler.postDelayed(restoreClipboardRunnable, 240L);
+                    }
                     return;
                 }
             }
