@@ -123,6 +123,15 @@ void GuiRuntime::SendRemoteInput(const RemoteAction& action, float wheel_delta) 
       scaled.type = ControlType::mouse;
       scaled.m = action.m;
       scaled.m.s = steps;
+#ifdef _WIN32
+      if (action.m.flag == MouseFlag::wheel_horizontal) {
+        std::lock_guard version_lock(props->remote_version_mutex_);
+        // winit negates WM_MOUSEHWHEEL. Windows injection expects the native sign.
+        if (props->remote_platform_ == HostPlatform::Windows) {
+          scaled.m.s = -steps;
+        }
+      }
+#endif
       message = scaled.to_json();
     }
     if (mouse) {
@@ -145,7 +154,7 @@ void GuiRuntime::SendRemoteInput(const RemoteAction& action, float wheel_delta) 
 }
 
 bool GuiRuntime::PrepareSharedGuiIdentity(bool import_existing,
-                                          std::string* error_out) {
+                                         std::string* error_out) {
   if (error_out) error_out->clear();
 #ifdef _WIN32
   if (!SupportsServiceAutostart() || shared_identity_) return true;
@@ -165,14 +174,32 @@ bool GuiRuntime::PrepareSharedGuiIdentity(bool import_existing,
     if (error_out) *error_out = error;
     return false;
   }
-  auto identity = SharedHostIdentity::AttachGui(path_manager_->GetCachePath(),
-      path_manager_->GetConfigPath() / "trusted-devices", import_existing, error);
-  if (!identity ||
-      (import_existing && config_center_->ApplySharedHostConfig(identity->HostConfig()) != 0)) {
-    if (error.empty()) error = "Cannot apply shared host configuration";
-    LOG_ERROR("Cannot load the machine identity: {}", error);
-    if (error_out) *error_out = error;
-    return false;
+  const auto cache = path_manager_->GetCachePath();
+  const auto trusted = path_manager_->GetConfigPath() / "trusted-devices";
+  std::unique_ptr<SharedHostIdentity> identity;
+  constexpr unsigned max_retries = 3;
+  for (unsigned attempt = 0;; ++attempt) {
+    bool retryable = false;
+    if (!identity) {
+      identity = SharedHostIdentity::AttachGui(cache, trusted, import_existing,
+                                              error, retryable);
+    }
+    if (identity) {
+      if (!import_existing ||
+          config_center_->ApplySharedHostConfig(identity->HostConfig(), &retryable) == 0) {
+        break;
+      }
+      error = retryable ? "Cannot save shared host configuration"
+                        : "Invalid shared host configuration";
+    }
+    if (!retryable || !import_existing || attempt == max_retries) {
+      LOG_ERROR("Cannot load the machine identity: {}", error);
+      if (error_out) *error_out = error;
+      return false;
+    }
+    // Keep the GUI attached while retrying a config save. A process restart
+    // would lose both the claim and the retry budget.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250u << attempt));
   }
   shared_identity_ = std::move(identity);
   managed_host_frontend_ = true;

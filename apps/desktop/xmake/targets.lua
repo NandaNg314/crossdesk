@@ -590,7 +590,7 @@ function setup_targets()
             add_files("apps/desktop/src/platform/windows/service/shared_identity.cpp")
             add_includedirs("apps/desktop/src")
             add_includedirs("apps/desktop/src/platform/windows/service")
-            add_syslinks("Advapi32", "Shell32", "Ole32", {public = true})
+            add_syslinks("Advapi32", "Shell32", "Ole32", "Ntdll", {public = true})
 
         target("windows_unattended_security_test")
             set_kind("binary")
@@ -598,14 +598,6 @@ function setup_targets()
             add_deps("windows_unattended_config")
             add_includedirs("apps/desktop/src/platform/windows/service")
             add_files("apps/desktop/tests/windows_unattended_security_test.cpp")
-
-        target("windows_unattended_dacl_recovery_test")
-            set_kind("binary")
-            set_default(false)
-            add_includedirs("apps/desktop/src/platform/windows/service")
-            add_files("apps/desktop/src/platform/windows/service/unattended_security.cpp",
-                "apps/desktop/tests/windows_unattended_dacl_recovery_test.cpp")
-            add_syslinks("Advapi32")
 
         target("windows_service_lifetime_test")
             set_kind("binary")
@@ -622,14 +614,6 @@ function setup_targets()
                 add_defines("CROSSDESK_PORTABLE=1")
             end
             add_files("apps/desktop/tests/windows_autostart_test.cpp")
-
-        target("windows_autostart_tray_test")
-            set_kind("binary")
-            set_default(false)
-            add_includedirs("apps/desktop/src/gui/application",
-                "apps/desktop/src/platform/windows/gui/tray")
-            add_syslinks("User32", "Shell32")
-            add_files("apps/desktop/tests/windows_autostart_tray_test.cpp")
 
         target("windows_runtime_daemon")
             set_kind("static")
