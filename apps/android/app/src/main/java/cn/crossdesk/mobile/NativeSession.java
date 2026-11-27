@@ -329,17 +329,23 @@ final class NativeSession implements AutoCloseable {
             return false;
         }
         boolean allAscii = true;
-        if (!unicode) {
-            for (int i = 0; i < text.length(); i++) {
-                if (KeyMap.ascii(text.charAt(i)) == 0) {
-                    allAscii = false;
-                    break;
-                }
+        for (int i = 0; i < text.length(); i++) {
+            if (KeyMap.ascii(text.charAt(i)) == 0) {
+                allAscii = false;
+                break;
             }
         }
         final boolean asciiOnly = allAscii;
-        boolean mac = "macos".equals(platform);
-        // Validate the entire edit before deleting anything. One RTC task preserves order.
+        final boolean win = "windows".equals(platform) || platform == null || platform.isEmpty();
+        final boolean mac = "macos".equals(platform);
+        final boolean ordinaryDesktop = privacyScreen.desktopAvailable;
+        // On Windows ordinary user desktop, SendInput(KEYEVENTF_UNICODE) synthesizes VK_PACKET,
+        // which Microsoft Pinyin / IMM32 intercepts inside classic Win32 Edit controls (such as
+        // Explorer folder rename, Desktop icon rename, and Save-As dialogs) — swallowing Chinese
+        // characters and misinterpreting ASCII wScan values as scrambled hardware scan codes!
+        // Routing IME commits on ordinary Windows desktop via serialized Clipboard + Ctrl+V
+        // bypasses Microsoft Pinyin completely and works 100% reliably across Explorer rename,
+        // browsers, editors, and chat apps, while Lock Screen / UAC still uses nText / nKey.
         execute(() -> {
             if (!connected || handle == 0) return;
             for (int i = 0; i < deletions; i++) {
@@ -347,7 +353,23 @@ final class NativeSession implements AutoCloseable {
                 nKey(handle, 8, false);
             }
             if (bytes.length == 0) return;
-            if (unicode) {
+            if (win && ordinaryDesktop) {
+                if (nClipboard(handle, bytes)) {
+                    try { Thread.sleep(32); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    if (!closed && connected && handle != 0) {
+                        try {
+                            nKey(handle, KeyCatalog.VK_LCONTROL, true);
+                            nKey(handle, 'V', true);
+                        } finally {
+                            nKey(handle, 'V', false);
+                            nKey(handle, KeyCatalog.VK_LCONTROL, false);
+                        }
+                    }
+                    try { Thread.sleep(14); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    return;
+                }
+            }
+            if (!win && unicode) {
                 nText(handle, bytes);
             } else if (asciiOnly) {
                 for (char ch : text.toCharArray()) {
@@ -358,9 +380,9 @@ final class NativeSession implements AutoCloseable {
                     nKey(handle, code & 255, false);
                     if (shift) nKey(handle, KeyCatalog.VK_LSHIFT, false);
                 }
+            } else if (unicode) {
+                nText(handle, bytes);
             } else {
-                // Fallback for hosts without direct UTF-8 text_input (e.g. Linux or early handshake):
-                // seamlessly sync clipboard and paste so Chinese input still works reliably.
                 if (nClipboard(handle, bytes)) {
                     try { Thread.sleep(25); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
                     if (!closed && connected && handle != 0) {

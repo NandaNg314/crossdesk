@@ -208,7 +208,8 @@ final class RemoteKeyboardInput extends EditText {
     private void schedule() {
         if (!resetting && accepting) {
             main.removeCallbacks(synchronize);
-            main.post(synchronize);
+            // Coalesce rapid letter-by-letter commits over 16ms while keeping Chinese candidate commits instant.
+            main.postDelayed(synchronize, 16L);
         }
     }
 
