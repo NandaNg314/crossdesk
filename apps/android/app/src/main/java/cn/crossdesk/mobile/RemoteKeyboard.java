@@ -52,11 +52,13 @@ final class RemoteKeyboard extends LinearLayout {
     private Runnable activeRepeatTask;
 
     private final LinearLayout toolbar;
+    private final FrameLayout header;
     private final TextView[] mainTabs = new TextView[3];
     private final LinearLayout shortcutActionsBox;
     private final TextView addShortcutBtn, editShortcutBtn, resetShortcutBtn, doneShortcutBtn;
     private final LinearLayout inlineSubPagesBox;
     private final TextView[] inlineSubPageBtns = new TextView[4];
+    private final TextView quickToggleBtn;
     private final MobileUi.Icon hideIcon;
 
     private final LinearLayout imeInputRow;
@@ -73,6 +75,7 @@ final class RemoteKeyboard extends LinearLayout {
     private int activeTab = TAB_IME;
     private int pcSubPage = SUBPAGE_MAIN;
     private boolean stickyComboMode;
+    private boolean quickBarExpandedInCompact;
     private final Set<Integer> oneShotModifiers = new LinkedHashSet<>();
     private final Set<Integer> lockedModifiers = new LinkedHashSet<>();
 
@@ -101,13 +104,13 @@ final class RemoteKeyboard extends LinearLayout {
             changed.run();
         });
 
-        // 1. Header row (44 dp)
-        FrameLayout header = new FrameLayout(context);
-        addView(header, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(44)));
+        // 1. Header row (34dp in compact IME mode, 42dp otherwise)
+        header = new FrameLayout(context);
+        addView(header, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(42)));
 
         toolbar = ui.row();
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(ui.dp(6), 0, ui.dp(4), 0);
+        toolbar.setPadding(ui.dp(8), 0, ui.dp(6), 0);
         header.addView(toolbar, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         // 3-tab segmented switch
@@ -119,11 +122,22 @@ final class RemoteKeyboard extends LinearLayout {
             TextView tab = smallButton(tabTitles[i], () -> selectTab(tabIdx));
             tab.setPadding(ui.dp(9), 0, ui.dp(9), 0);
             mainTabs[i] = tab;
-            tabStrip.addView(tab, new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(30)));
+            tabStrip.addView(tab, new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(26)));
         }
-        toolbar.addView(tabStrip, new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34)));
+        toolbar.addView(tabStrip, new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(30)));
 
         toolbar.addView(new View(context), new LayoutParams(0, 1, 1f));
+
+        // Quick-keys toggle pill shown in compact landscape IME mode so user still has 1-tap access
+        quickToggleBtn = smallButton(L10n.tr("常用键"), () -> {
+            quickBarExpandedInCompact = !quickBarExpandedInCompact;
+            render();
+            changed.run();
+        });
+        quickToggleBtn.setPadding(ui.dp(9), 0, ui.dp(9), 0);
+        LayoutParams qtLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(26));
+        qtLp.rightMargin = ui.dp(4);
+        toolbar.addView(quickToggleBtn, qtLp);
 
         // Contextual actions for 快捷键 tab
         shortcutActionsBox = ui.row();
@@ -166,18 +180,18 @@ final class RemoteKeyboard extends LinearLayout {
         hideLp.leftMargin = ui.dp(2);
         toolbar.addView(hide, hideLp);
 
-        // 2. Visible Live Chinese / Text Input Row for 输入法 tab (40 dp)
+        // 2. Visible Live Chinese / Text Input Row for 输入法 tab (38 dp)
         imeInputRow = ui.row();
         imeInputRow.setGravity(Gravity.CENTER_VERTICAL);
-        imeInputRow.setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(4));
+        imeInputRow.setPadding(ui.dp(8), ui.dp(1), ui.dp(8), ui.dp(4));
 
         imeToggleLangBtn = smallButton(L10n.tr("中/英"), this::toggleRemoteIme);
         imeToggleLangBtn.setPadding(ui.dp(8), 0, ui.dp(8), 0);
-        LayoutParams langLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        LayoutParams langLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(32));
         langLp.rightMargin = ui.dp(5);
         imeInputRow.addView(imeToggleLangBtn, langLp);
 
-        LayoutParams editorLp = new LayoutParams(0, ui.dp(34), 1f);
+        LayoutParams editorLp = new LayoutParams(0, ui.dp(32), 1f);
         imeInputRow.addView(editor, editorLp);
 
         imeBackspaceBtn = repeatableButton("⌫", L10n.tr("退格"), () -> {
@@ -191,26 +205,26 @@ final class RemoteKeyboard extends LinearLayout {
             }
         });
         imeBackspaceBtn.setPadding(ui.dp(10), 0, ui.dp(10), 0);
-        LayoutParams bsLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        LayoutParams bsLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(32));
         bsLp.leftMargin = ui.dp(5);
         imeInputRow.addView(imeBackspaceBtn, bsLp);
 
         imeEnterBtn = smallButton(L10n.tr("回车"), editor::triggerEnter);
         imeEnterBtn.setPadding(ui.dp(10), 0, ui.dp(10), 0);
-        LayoutParams enterLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        LayoutParams enterLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(32));
         enterLp.leftMargin = ui.dp(5);
         imeInputRow.addView(imeEnterBtn, enterLp);
 
-        addView(imeInputRow, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(40)));
+        addView(imeInputRow, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(38)));
 
-        // 3. Pinned quick strip + Chinese punctuation pills for 输入法 tab (38 dp)
+        // 3. Pinned quick strip + Chinese punctuation pills for 输入法 tab (34 dp)
         quickScroll = new HorizontalScrollView(context);
         quickScroll.setHorizontalScrollBarEnabled(false);
         quickScroll.setFocusable(false);
         quickKeys = ui.row();
-        quickKeys.setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(4));
+        quickKeys.setPadding(ui.dp(8), ui.dp(1), ui.dp(8), ui.dp(4));
         quickScroll.addView(quickKeys);
-        addView(quickScroll, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(38)));
+        addView(quickScroll, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(34)));
 
         // 4. Custom bottom keybed for 快捷键 / 电脑键盘 tabs
         keys = ui.column();
@@ -222,8 +236,18 @@ final class RemoteKeyboard extends LinearLayout {
     }
 
     private boolean dark() {
-        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                == Configuration.UI_MODE_NIGHT_YES;
+        // Remote desktop canvas is always dark; keep keyboard bar sleek dark-translucent so it blends naturally.
+        return true;
+    }
+
+    private boolean isCompactLandscapeIme() {
+        Configuration c = getResources().getConfiguration();
+        return !computer && c.screenWidthDp > c.screenHeightDp && c.screenHeightDp < 520;
+    }
+
+    private boolean shouldShowQuickStrip() {
+        if (computer) return false;
+        return !isCompactLandscapeIme() || quickBarExpandedInCompact;
     }
 
     private int foreground() { return dark() ? Color.WHITE : 0xFF202124; }
@@ -335,8 +359,11 @@ final class RemoteKeyboard extends LinearLayout {
     }
 
     int preferredHeight() {
-        if (!opened) return ui.dp(44);
-        return computer ? ui.dp(44) + keyAreaHeight() : ui.dp(122);
+        if (!opened) return ui.dp(42);
+        if (computer) return ui.dp(42) + keyAreaHeight();
+        int headerH = isCompactLandscapeIme() ? 34 : 40;
+        int quickH = shouldShowQuickStrip() ? 34 : 0;
+        return ui.dp(headerH + 38 + quickH);
     }
 
     void toggle() {
@@ -495,18 +522,35 @@ final class RemoteKeyboard extends LinearLayout {
 
     private void render() {
         boolean isDark = dark();
-        setBackgroundColor(isDark ? 0xFF1E2025 : 0xFFE8EAED);
-        hideIcon.setColor(foreground());
+        boolean compactIme = isCompactLandscapeIme();
+        boolean showQuick = shouldShowQuickStrip();
+
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(0xEA181A20);
+        panelBg.setStroke(Math.max(1, ui.dp(0.8f)), 0x22FFFFFF);
+        setBackground(panelBg);
+
+        LayoutParams headerLp = (LayoutParams) header.getLayoutParams();
+        headerLp.height = ui.dp(compactIme ? 34 : 40);
+        header.setLayoutParams(headerLp);
+
+        hideIcon.setColor(0xFFE5E5EA);
         editor.applyTheme(isDark, ui);
 
         View tabStrip = (View) mainTabs[0].getParent();
-        tabStrip.setBackground(ui.background(isDark ? 0xFF2B2E36 : 0xFFD9DCE2, 9));
+        tabStrip.setBackground(ui.background(0xFF252830, 8));
         for (int i = 0; i < 3; i++) {
             boolean active = activeTab == i;
             mainTabs[i].setSelected(active);
             mainTabs[i].setTypeface(Typeface.create("sans-serif-medium", active ? Typeface.BOLD : Typeface.NORMAL));
-            mainTabs[i].setTextColor(active ? Color.WHITE : foreground());
-            mainTabs[i].setBackground(ui.background(active ? MobileUi.BLUE : Color.TRANSPARENT, 7));
+            mainTabs[i].setTextColor(active ? Color.WHITE : 0xFFC8CCD6);
+            mainTabs[i].setBackground(ui.background(active ? MobileUi.BLUE : Color.TRANSPARENT, 6));
+        }
+
+        quickToggleBtn.setVisibility(compactIme ? VISIBLE : GONE);
+        if (compactIme) {
+            quickToggleBtn.setTextColor(quickBarExpandedInCompact ? Color.WHITE : 0xFFC8CCD6);
+            quickToggleBtn.setBackground(ui.background(quickBarExpandedInCompact ? MobileUi.BLUE : 0xFF252830, 6));
         }
 
         // Shortcut tab header actions
@@ -540,9 +584,9 @@ final class RemoteKeyboard extends LinearLayout {
 
         // Live IME input row + quick strip
         imeInputRow.setVisibility(!computer ? VISIBLE : GONE);
-        quickScroll.setVisibility(!computer ? VISIBLE : GONE);
+        quickScroll.setVisibility(showQuick ? VISIBLE : GONE);
         if (!computer) {
-            int actionChipBg = isDark ? 0xFF2C3038 : 0xFFD5D9E0;
+            int actionChipBg = isDark ? 0xFF282C35 : 0xFFD5D9E0;
             imeToggleLangBtn.setBackground(ui.background(actionChipBg, 7));
             imeToggleLangBtn.setTextColor(foreground());
             imeBackspaceBtn.setBackground(ui.background(actionChipBg, 7));
@@ -550,25 +594,27 @@ final class RemoteKeyboard extends LinearLayout {
             imeEnterBtn.setBackground(ui.background(MobileUi.BLUE, 7));
             imeEnterBtn.setTextColor(Color.WHITE);
 
-            quickKeys.removeAllViews();
-            int pillBg = isDark ? 0xFF2C3038 : Color.WHITE;
-            for (RemoteShortcuts.Item item : shortcutPanel.store.pinnedQuickBar(hostPlatform)) {
-                TextView pill = smallButton(item.title(), () -> sendShortcut(item));
-                pill.setBackground(ui.background(pillBg, 7));
-                pill.setPadding(ui.dp(10), 0, ui.dp(10), 0);
-                LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(30));
-                lp.rightMargin = ui.dp(5);
-                quickKeys.addView(pill, lp);
-            }
-            // Append one-tap Chinese punctuation pills right in the quick strip
-            int punctBg = isDark ? 0xFF252932 : 0xFFF3F5F8;
-            for (String punct : QUICK_CN_PUNCT) {
-                TextView pill = smallButton(punct, () -> sendLiteralText(punct));
-                pill.setBackground(ui.background(punctBg, 7));
-                pill.setPadding(ui.dp(9), 0, ui.dp(9), 0);
-                LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(30));
-                lp.rightMargin = ui.dp(4);
-                quickKeys.addView(pill, lp);
+            if (showQuick) {
+                quickKeys.removeAllViews();
+                int pillBg = isDark ? 0xFF282C35 : Color.WHITE;
+                for (RemoteShortcuts.Item item : shortcutPanel.store.pinnedQuickBar(hostPlatform)) {
+                    TextView pill = smallButton(item.title(), () -> sendShortcut(item));
+                    pill.setBackground(ui.background(pillBg, 6));
+                    pill.setPadding(ui.dp(9), 0, ui.dp(9), 0);
+                    LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(27));
+                    lp.rightMargin = ui.dp(5);
+                    quickKeys.addView(pill, lp);
+                }
+                // Append one-tap Chinese punctuation pills right in the quick strip
+                int punctBg = isDark ? 0xFF21242C : 0xFFF3F5F8;
+                for (String punct : QUICK_CN_PUNCT) {
+                    TextView pill = smallButton(punct, () -> sendLiteralText(punct));
+                    pill.setBackground(ui.background(punctBg, 6));
+                    pill.setPadding(ui.dp(8), 0, ui.dp(8), 0);
+                    LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(27));
+                    lp.rightMargin = ui.dp(4);
+                    quickKeys.addView(pill, lp);
+                }
             }
         }
 

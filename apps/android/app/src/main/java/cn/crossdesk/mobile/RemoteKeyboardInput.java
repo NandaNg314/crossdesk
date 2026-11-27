@@ -75,8 +75,8 @@ final class RemoteKeyboardInput extends EditText {
     void applyTheme(boolean dark, MobileUi ui) {
         setTextColor(dark ? 0xFFF5F5F7 : 0xFF1D1D1F);
         setHintTextColor(dark ? 0xFF8E939E : 0xFF7A7F89);
-        android.graphics.drawable.GradientDrawable bg = ui.background(dark ? 0xFF14161B : 0xFFFFFFFF, 8);
-        bg.setStroke(Math.max(1, ui.dp(1f)), dark ? 0x33FFFFFF : 0x1F000000);
+        android.graphics.drawable.GradientDrawable bg = ui.background(dark ? 0xFF23262F : 0xFFFFFFFF, 8);
+        bg.setStroke(Math.max(1, ui.dp(1f)), dark ? 0x2AFFFFFF : 0x1F000000);
         setBackground(bg);
         setPadding(ui.dp(10), 0, ui.dp(10), 0);
     }
