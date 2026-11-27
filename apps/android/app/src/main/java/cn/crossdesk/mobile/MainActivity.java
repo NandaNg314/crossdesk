@@ -160,7 +160,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
                 if(controls!=null)controls.keyboardInsets(Math.max(0,insets.getInsets(WindowInsets.Type.ime()).bottom-bars.bottom),insets.isVisible(WindowInsets.Type.ime()),bars.bottom);
             }else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;
         });
-        root.setFocusableInTouchMode(true);pageHost.show(canvas,motion);
+        if(!dark)root.setFocusableInTouchMode(true);
+        pageHost.show(canvas,motion);
         applySystemBars();
     }
     // Android 8–10 require system UI flags instead of WindowInsetsController.
@@ -834,7 +835,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     private void sendText(String value){sendTextEdit(0,value);}
     private boolean sendTextEdit(int count,String value){
         if(session==null)return false;
-        if(session.textEdit(count,value))return true;
+        if(session.textEdit(count,value,hostPlatform))return true;
         toast(L10n.tr("当前远端不支持直接输入此文本，请使用支持文本输入的被控端版本，或通过剪贴板发送"));return false;
     }
     private void tapKey(int code){if(session!=null){session.key(code,true);session.key(code,false);}}
@@ -1165,7 +1166,20 @@ public final class MainActivity extends Activity implements NativeSession.Listen
     @Override public boolean dispatchKeyEvent(KeyEvent event){
         if (privacyUnlockDialog != null) return super.dispatchKeyEvent(event);
         if (video != null && video.isViewOnly() && event.getKeyCode() != KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
-        int code=KeyMap.windowsCode(event.getKeyCode());View focus=getCurrentFocus();
+        View focus=getCurrentFocus();
+        boolean nonSessionEditor = focus instanceof EditText && !(focus instanceof RemoteKeyboardInput);
+        if (ready && session != null && !pictureInPictureUi && hasWindowFocus() && !nonSessionEditor) {
+            if (event.getAction() == KeyEvent.ACTION_MULTIPLE && event.getCharacters() != null && !event.getCharacters().isEmpty()) {
+                sendText(event.getCharacters());
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getUnicodeChar() >= 0x80
+                    && !(focus instanceof RemoteKeyboardInput && ((RemoteKeyboardInput) focus).isAcceptingInput())) {
+                sendText(new String(Character.toChars(event.getUnicodeChar())));
+                return true;
+            }
+        }
+        int code=KeyMap.windowsCode(event.getKeyCode());
         boolean remoteEditor=focus instanceof RemoteKeyboardInput;
         boolean desktopKey=event.isCtrlPressed()||event.isAltPressed()||event.isMetaPressed()||pressed.contains(code)
             ||code==17||code==18||code==91||code==27||code==9||code>=33&&code<=40||code==45||code==46||code>=112&&code<=123;

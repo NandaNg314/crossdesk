@@ -159,7 +159,7 @@ final class SessionControls extends FrameLayout {
 
         dockCollapseBtn = new FrameLayout(context);
         dockCollapseBtn.setClickable(true);
-        dockCollapseBtn.setFocusable(true);
+        dockCollapseBtn.setFocusable(false);
         dockCollapseIcon = ui.icon("chevron_right", 0xFFD1D1D6);
         dockCollapseBtn.addView(dockCollapseIcon, new LayoutParams(ui.dp(14), ui.dp(14), Gravity.CENTER));
         attachDockDragAndTap(dockCollapseBtn, this::toggleDockCollapsed);
@@ -248,7 +248,7 @@ final class SessionControls extends FrameLayout {
     @SuppressLint("ClickableViewAccessibility")
     private void attachDockDragAndTap(View view, Runnable tap) {
         view.setClickable(true);
-        view.setFocusable(true);
+        view.setFocusable(false);
         view.setOnClickListener(v -> tap.run());
         int slop = ui.dp(5);
         view.setOnTouchListener(new OnTouchListener() {

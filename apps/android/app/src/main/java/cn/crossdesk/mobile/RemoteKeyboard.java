@@ -1,5 +1,6 @@
 package cn.crossdesk.mobile;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -7,31 +8,29 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.os.Build;
-import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.SparseIntArray;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowInsets;
-import android.view.WindowInsetsAnimationControlListener;
-import android.view.WindowInsetsAnimationController;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * Unified 3-tab bottom keyboard:
- * Tab 0: 输入法 (System IME + pinned horizontal quick strip)
+ * Unified 3-tab bottom keyboard with visible live Chinese IME input bar & zero-deadlock switching:
+ * Tab 0: 输入法 (Visible live Chinese/text input bar + explicit IME summon + quick shortcuts & Chinese punctuation)
  * Tab 1: 快捷键 (Responsive multi-column shortcut grid with +Add / Edit / Reorder / Reset)
- * Tab 2: 电脑键盘 (Sticky 组合键模式 + Ctrl/Shift/Alt/Win + 主键盘 | 功能符号 | 小键盘)
+ * Tab 2: 电脑键盘 (Sticky 组合键模式 + 中/英 + Ctrl/Shift/Alt/Win + 主键盘 | 功能符号 | 中文标点 | 小键盘)
  */
-@android.annotation.SuppressLint("ViewConstructor")
+@SuppressLint("ViewConstructor")
 final class RemoteKeyboard extends LinearLayout {
     static final int TAB_IME = 0;
     static final int TAB_SHORTCUTS = 1;
@@ -39,19 +38,31 @@ final class RemoteKeyboard extends LinearLayout {
 
     static final int SUBPAGE_MAIN = 0;
     static final int SUBPAGE_FUNC_SYM = 1;
-    static final int SUBPAGE_NUMPAD = 2;
+    static final int SUBPAGE_CN_PUNCT = 2;
+    static final int SUBPAGE_NUMPAD = 3;
+
+    private static final String[] SUBPAGE_TITLES = {"主键盘", "功能符号", "中文标点", "小键盘"};
+    private static final String[] QUICK_CN_PUNCT = {"，", "。", "？", "！", "、", "：", "；", "“”", "（）", "【】"};
 
     private final MobileUi ui;
     private final SessionControls.Actions actions;
     final RemoteKeyboardInput editor;
     private final Runnable changed;
+    private final Handler repeatHandler = new Handler(Looper.getMainLooper());
+    private Runnable activeRepeatTask;
+
     private final LinearLayout toolbar;
     private final TextView[] mainTabs = new TextView[3];
     private final LinearLayout shortcutActionsBox;
     private final TextView addShortcutBtn, editShortcutBtn, resetShortcutBtn, doneShortcutBtn;
     private final LinearLayout inlineSubPagesBox;
-    private final TextView[] inlineSubPageBtns = new TextView[3];
+    private final TextView[] inlineSubPageBtns = new TextView[4];
     private final MobileUi.Icon hideIcon;
+
+    private final LinearLayout imeInputRow;
+    private final TextView imeToggleLangBtn;
+    private final TextView imeBackspaceBtn;
+    private final TextView imeEnterBtn;
 
     private final HorizontalScrollView quickScroll;
     private final LinearLayout quickKeys;
@@ -66,9 +77,8 @@ final class RemoteKeyboard extends LinearLayout {
     private final Set<Integer> lockedModifiers = new LinkedHashSet<>();
 
     private final SparseIntArray heights = new SparseIntArray();
-    private boolean opened, computer, imeVisible, measuring, switching, targetComputer;
-    private int imeHeight, navigationBottom, layoutWidth, layoutHeight, revision, lastInsetsHeight = -1, lastInsetsKey;
-    private CancellationSignal transition;
+    private boolean opened, computer, imeVisible;
+    private int imeHeight, navigationBottom, layoutWidth, layoutHeight, lastInsetsHeight = -1, lastInsetsKey;
 
     RemoteKeyboard(Context context, MobileUi ui, SessionControls.Actions actions, Runnable changed) {
         super(context);
@@ -78,6 +88,7 @@ final class RemoteKeyboard extends LinearLayout {
         setOrientation(VERTICAL);
         setVisibility(GONE);
         setClickable(true);
+        setFocusable(false);
         setMotionEventSplittingEnabled(true);
 
         editor = new RemoteKeyboardInput(context, new RemoteKeyboardInput.Sender() {
@@ -90,10 +101,9 @@ final class RemoteKeyboard extends LinearLayout {
             changed.run();
         });
 
-        // Header row (44 dp)
+        // 1. Header row (44 dp)
         FrameLayout header = new FrameLayout(context);
         addView(header, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(44)));
-        header.addView(editor, new FrameLayout.LayoutParams(1, 1, Gravity.BOTTOM));
 
         toolbar = ui.row();
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -130,11 +140,10 @@ final class RemoteKeyboard extends LinearLayout {
 
         // Inline sub-page selector for 电脑键盘 tab on wide viewports
         inlineSubPagesBox = ui.row();
-        String[] subTitles = {L10n.tr("主键盘"), L10n.tr("功能符号"), L10n.tr("小键盘")};
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             final int subIdx = i;
-            TextView subBtn = smallButton(subTitles[i], () -> selectSubPage(subIdx));
-            subBtn.setPadding(ui.dp(8), 0, ui.dp(8), 0);
+            TextView subBtn = smallButton(L10n.tr(SUBPAGE_TITLES[i]), () -> selectSubPage(subIdx));
+            subBtn.setPadding(ui.dp(7), 0, ui.dp(7), 0);
             inlineSubPageBtns[i] = subBtn;
             LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(28));
             if (i > 0) lp.leftMargin = ui.dp(3);
@@ -146,7 +155,7 @@ final class RemoteKeyboard extends LinearLayout {
         FrameLayout hide = new FrameLayout(context);
         hide.setContentDescription(L10n.tr("收起键盘"));
         hide.setClickable(true);
-        hide.setFocusable(true);
+        hide.setFocusable(false);
         hideIcon = ui.icon("keyboard_hide", foreground());
         hide.addView(hideIcon, new FrameLayout.LayoutParams(ui.dp(22), ui.dp(22), Gravity.CENTER));
         hide.setOnClickListener(v -> {
@@ -157,15 +166,53 @@ final class RemoteKeyboard extends LinearLayout {
         hideLp.leftMargin = ui.dp(2);
         toolbar.addView(hide, hideLp);
 
-        // Pinned quick strip for 输入法 tab (38 dp)
+        // 2. Visible Live Chinese / Text Input Row for 输入法 tab (40 dp)
+        imeInputRow = ui.row();
+        imeInputRow.setGravity(Gravity.CENTER_VERTICAL);
+        imeInputRow.setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(4));
+
+        imeToggleLangBtn = smallButton(L10n.tr("中/英"), this::toggleRemoteIme);
+        imeToggleLangBtn.setPadding(ui.dp(8), 0, ui.dp(8), 0);
+        LayoutParams langLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        langLp.rightMargin = ui.dp(5);
+        imeInputRow.addView(imeToggleLangBtn, langLp);
+
+        LayoutParams editorLp = new LayoutParams(0, ui.dp(34), 1f);
+        imeInputRow.addView(editor, editorLp);
+
+        imeBackspaceBtn = repeatableButton("⌫", L10n.tr("退格"), () -> {
+            if (editor.length() > 0) {
+                editor.dispatchKeyEvent(new android.view.KeyEvent(
+                        android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL));
+                editor.dispatchKeyEvent(new android.view.KeyEvent(
+                        android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL));
+            } else {
+                actions.key(KeyCatalog.VK_BACK);
+            }
+        });
+        imeBackspaceBtn.setPadding(ui.dp(10), 0, ui.dp(10), 0);
+        LayoutParams bsLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        bsLp.leftMargin = ui.dp(5);
+        imeInputRow.addView(imeBackspaceBtn, bsLp);
+
+        imeEnterBtn = smallButton(L10n.tr("回车"), editor::triggerEnter);
+        imeEnterBtn.setPadding(ui.dp(10), 0, ui.dp(10), 0);
+        LayoutParams enterLp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(34));
+        enterLp.leftMargin = ui.dp(5);
+        imeInputRow.addView(imeEnterBtn, enterLp);
+
+        addView(imeInputRow, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(40)));
+
+        // 3. Pinned quick strip + Chinese punctuation pills for 输入法 tab (38 dp)
         quickScroll = new HorizontalScrollView(context);
         quickScroll.setHorizontalScrollBarEnabled(false);
+        quickScroll.setFocusable(false);
         quickKeys = ui.row();
-        quickKeys.setPadding(ui.dp(6), ui.dp(3), ui.dp(6), ui.dp(4));
+        quickKeys.setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(4));
         quickScroll.addView(quickKeys);
         addView(quickScroll, new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(38)));
 
-        // Custom bottom keybed for 快捷键 / 电脑键盘 tabs
+        // 4. Custom bottom keybed for 快捷键 / 电脑键盘 tabs
         keys = ui.column();
         keys.setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(4));
         keys.setMotionEventSplittingEnabled(true);
@@ -183,6 +230,8 @@ final class RemoteKeyboard extends LinearLayout {
 
     private TextView smallButton(String label, Runnable action) {
         TextView view = ui.action(label, foreground(), action);
+        view.setFocusable(false);
+        view.setFocusableInTouchMode(false);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         view.setTextSize(12);
         view.setMinHeight(0);
@@ -195,8 +244,68 @@ final class RemoteKeyboard extends LinearLayout {
         return view;
     }
 
+    @SuppressLint("ClickableViewAccessibility")
+    private TextView repeatableButton(String label, String contentDesc, Runnable stepAction) {
+        TextView view = smallButton(label, stepAction);
+        if (contentDesc != null && !contentDesc.isEmpty()) {
+            view.setContentDescription(contentDesc);
+        }
+        view.setOnTouchListener((v, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                stopRepeat();
+                v.setPressed(true);
+                feedback(v);
+                stepAction.run();
+                Runnable tick = new Runnable() {
+                    @Override public void run() {
+                        if (!v.isAttachedToWindow() || !v.isPressed() || !opened) {
+                            stopRepeat();
+                            return;
+                        }
+                        stepAction.run();
+                        repeatHandler.postDelayed(this, 55L);
+                    }
+                };
+                activeRepeatTask = tick;
+                repeatHandler.postDelayed(tick, 360L);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                stopRepeat();
+                return true;
+            }
+            return false;
+        });
+        return view;
+    }
+
+    private void stopRepeat() {
+        if (activeRepeatTask != null) {
+            repeatHandler.removeCallbacks(activeRepeatTask);
+            activeRepeatTask = null;
+        }
+    }
+
     private void feedback(View view) {
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+    }
+
+    private void toggleRemoteIme() {
+        clearAllModifiers();
+        if ("macos".equals(hostPlatform)) {
+            actions.chord(KeyCatalog.VK_SPACE, new int[]{KeyCatalog.VK_LCONTROL});
+        } else {
+            // Windows / Linux Chinese IME standard toggle: Ctrl+Space (universal) or Shift
+            actions.chord(KeyCatalog.VK_SPACE, new int[]{KeyCatalog.VK_LCONTROL});
+        }
+    }
+
+    private void sendLiteralText(String value) {
+        if (value == null || value.isEmpty()) return;
+        if (!computer) editor.finishInputContext();
+        actions.textEdit(0, value);
     }
 
     boolean isOpen() { return opened; }
@@ -227,7 +336,7 @@ final class RemoteKeyboard extends LinearLayout {
 
     int preferredHeight() {
         if (!opened) return ui.dp(44);
-        return computer ? ui.dp(44) + keyAreaHeight() : ui.dp(82);
+        return computer ? ui.dp(44) + keyAreaHeight() : ui.dp(122);
     }
 
     void toggle() {
@@ -236,6 +345,7 @@ final class RemoteKeyboard extends LinearLayout {
     }
 
     void open() {
+        stopRepeat();
         opened = true;
         activeTab = TAB_IME;
         computer = false;
@@ -245,26 +355,31 @@ final class RemoteKeyboard extends LinearLayout {
         layoutWidth = layoutHeight = 0;
         render();
         changed.run();
+        editor.start();
         post(() -> {
-            if (opened && !computer) changeIme(true, false, false);
+            if (opened && !computer) editor.focusAndShowIme();
         });
+        postDelayed(() -> {
+            if (opened && !computer && !imeVisible) editor.focusAndShowIme();
+        }, 80L);
     }
 
     boolean close() {
+        stopRepeat();
         shortcutPanel.close();
         clearAllModifiers();
         if (!opened) return false;
         opened = false;
-        measuring = switching = false;
-        cancelTransition();
         editor.stop();
-        getContext().getSystemService(InputMethodManager.class).hideSoftInputFromWindow(getWindowToken(), 0);
+        InputMethodManager imm = getContext().getSystemService(InputMethodManager.class);
+        if (imm != null) imm.hideSoftInputFromWindow(getWindowToken(), 0);
         setVisibility(GONE);
         changed.run();
         return true;
     }
 
     void releaseLockedModifiers() {
+        stopRepeat();
         clearAllModifiers();
         if (opened) {
             layoutWidth = layoutHeight = 0;
@@ -288,61 +403,57 @@ final class RemoteKeyboard extends LinearLayout {
 
     private void selectSubPage(int subPage) {
         if (pcSubPage == subPage) return;
+        stopRepeat();
         pcSubPage = subPage;
         layoutWidth = layoutHeight = 0;
         render();
     }
 
     private void selectTab(int nextTab) {
-        if (!opened || switching || activeTab == nextTab) return;
+        if (!opened) return;
+        stopRepeat();
+        if (activeTab == nextTab) {
+            if (nextTab == TAB_IME) {
+                // Re-tapping 输入法 always re-focuses and pops up the system IME (fixes floating/dismissed IME!)
+                computer = false;
+                render();
+                changed.run();
+                editor.focusAndShowIme();
+            }
+            return;
+        }
+
         boolean nextIsComputer = nextTab != TAB_IME;
-        if (!computer && nextIsComputer && !prepareShortcut()) return;
+        if (!computer && nextIsComputer) {
+            editor.prepareShortcut();
+        }
 
         clearAllModifiers();
         if (nextTab != TAB_SHORTCUTS) shortcutPanel.setEditing(false);
         activeTab = nextTab;
+        computer = nextIsComputer;
         layoutWidth = layoutHeight = 0;
 
-        if (computer == nextIsComputer) {
-            // Instant switch between 快捷键 and 电脑键盘 without touching IME
-            render();
-            changed.run();
-            return;
-        }
-
-        targetComputer = nextIsComputer;
-        switching = true;
-        if (targetComputer) {
+        InputMethodManager imm = getContext().getSystemService(InputMethodManager.class);
+        if (computer) {
             editor.pause();
-            computer = true;
+            if (imm != null) imm.hideSoftInputFromWindow(getWindowToken(), 0);
             render();
             changed.run();
         } else {
-            editor.start();
+            render();
+            changed.run();
+            editor.focusAndShowIme();
+            postDelayed(() -> {
+                if (opened && !computer) editor.focusAndShowIme();
+            }, 60L);
         }
-
-        if (targetComputer && Build.VERSION.SDK_INT >= 30 && isHardwareAccelerated()) {
-            int token = revision;
-            getViewTreeObserver().registerFrameCommitCallback(() -> post(() -> {
-                if (opened && switching && targetComputer && token == revision) changeIme(false, true, false);
-            }));
-            invalidate();
-        } else {
-            changeIme(!targetComputer, true, false);
-        }
-    }
-
-    private boolean prepareShortcut() {
-        if (computer) return true;
-        if (editor.hasPendingComposition()) {
-            Toast.makeText(getContext(), L10n.tr("请先选词或取消组词"), Toast.LENGTH_SHORT).show();
-            return false;
-        }
-        return editor.prepareShortcut();
     }
 
     private void sendShortcut(RemoteShortcuts.Item item) {
-        if (!opened || switching || !prepareShortcut()) return;
+        if (!opened) return;
+        stopRepeat();
+        if (!computer) editor.prepareShortcut();
         clearAllModifiers();
         if (item.service) {
             actions.secureAttention();
@@ -351,17 +462,10 @@ final class RemoteKeyboard extends LinearLayout {
         } else {
             actions.chord(item.resolvedKey(hostPlatform), item.resolvedModifiers(hostPlatform));
         }
-    }
-
-    private void finishSwitch() {
-        if (!switching) return;
-        switching = false;
-        if (computer != targetComputer) {
-            computer = targetComputer;
-            layoutWidth = layoutHeight = 0;
-            render();
+        if (!computer) {
+            // Keep IME connection alive after tapping a quick shortcut pill
+            editor.start();
         }
-        changed.run();
     }
 
     void updateInsets(int height, boolean visible, int navigation) {
@@ -373,21 +477,9 @@ final class RemoteKeyboard extends LinearLayout {
         lastInsetsKey = key;
         navigationBottom = navigation;
         imeHeight = Build.VERSION.SDK_INT >= 30 ? Math.max(0, height) : 0;
-        boolean wasVisible = imeVisible;
         imeVisible = visible;
         if (visible && height > ui.dp(80)) {
             heights.put(sizeKey(), height);
-            if (measuring) {
-                measuring = false;
-                post(() -> {
-                    if (opened && computer) changeIme(false, true, false);
-                });
-            }
-        }
-        if (switching && visible != targetComputer && (!visible || height > ui.dp(80))) finishSwitch();
-        if (opened && !computer && !switching && wasVisible && !visible && transition == null) {
-            close();
-            return;
         }
         if (opened) {
             renderKeysIfNeeded(getMeasuredWidth());
@@ -395,85 +487,17 @@ final class RemoteKeyboard extends LinearLayout {
         }
     }
 
-    private void cancelTransition() {
-        revision++;
-        if (transition != null) {
-            CancellationSignal old = transition;
-            transition = null;
-            old.cancel();
-        }
-    }
-
-    private void changeIme(boolean show, boolean immediate, boolean measureOnly) {
-        cancelTransition();
-        if (!opened) return;
-        measuring = measureOnly;
-        if (Build.VERSION.SDK_INT >= 30 && immediate && getWindowInsetsController() != null) {
-            if (show) editor.start();
-            else if (measureOnly) editor.requestFocus();
-            int token = revision;
-            transition = new CancellationSignal();
-            getWindowInsetsController().controlWindowInsetsAnimation(
-                    WindowInsets.Type.ime(), 0, null, transition, new WindowInsetsAnimationControlListener() {
-                        public void onReady(WindowInsetsAnimationController controller, int types) {
-                            if (token != revision || !opened) {
-                                controller.finish(false);
-                                return;
-                            }
-                            int height = controller.getShownStateInsets().bottom - navigationBottom;
-                            if (height > ui.dp(80)) {
-                                heights.put(sizeKey(), height);
-                                measuring = false;
-                                if (!measureOnly) {
-                                    imeHeight = show ? height : 0;
-                                    finishSwitch();
-                                }
-                                controller.finish(show && !measureOnly);
-                            } else if (measureOnly) {
-                                controller.finish(true);
-                            } else {
-                                controller.finish(show);
-                            }
-                            renderKeysIfNeeded(getMeasuredWidth());
-                            changed.run();
-                        }
-
-                        public void onFinished(WindowInsetsAnimationController controller) {
-                            if (token == revision) transition = null;
-                        }
-
-                        public void onCancelled(WindowInsetsAnimationController controller) {
-                            if (token != revision) return;
-                            transition = null;
-                            if (opened) normalIme(show || measureOnly);
-                        }
-                    });
-        } else {
-            normalIme(show || measureOnly);
-        }
-    }
-
-    private void normalIme(boolean show) {
-        InputMethodManager manager = getContext().getSystemService(InputMethodManager.class);
-        if (show) {
-            if (computer) editor.requestFocus();
-            else editor.start();
-            manager.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT);
-        } else {
-            manager.hideSoftInputFromWindow(editor.getWindowToken(), 0);
-        }
-    }
-
     private boolean wideHeader() {
         int w = getMeasuredWidth();
         if (w <= 0) w = ui.dp(getResources().getConfiguration().screenWidthDp);
-        return w >= ui.dp(540);
+        return w >= ui.dp(620);
     }
 
     private void render() {
         boolean isDark = dark();
         setBackgroundColor(isDark ? 0xFF1E2025 : 0xFFE8EAED);
         hideIcon.setColor(foreground());
+        editor.applyTheme(isDark, ui);
 
         View tabStrip = (View) mainTabs[0].getParent();
         tabStrip.setBackground(ui.background(isDark ? 0xFF2B2E36 : 0xFFD9DCE2, 9));
@@ -514,9 +538,18 @@ final class RemoteKeyboard extends LinearLayout {
             styleSubPageButtons(inlineSubPageBtns, isDark);
         }
 
-        // IME quick strip
+        // Live IME input row + quick strip
+        imeInputRow.setVisibility(!computer ? VISIBLE : GONE);
         quickScroll.setVisibility(!computer ? VISIBLE : GONE);
         if (!computer) {
+            int actionChipBg = isDark ? 0xFF2C3038 : 0xFFD5D9E0;
+            imeToggleLangBtn.setBackground(ui.background(actionChipBg, 7));
+            imeToggleLangBtn.setTextColor(foreground());
+            imeBackspaceBtn.setBackground(ui.background(actionChipBg, 7));
+            imeBackspaceBtn.setTextColor(foreground());
+            imeEnterBtn.setBackground(ui.background(MobileUi.BLUE, 7));
+            imeEnterBtn.setTextColor(Color.WHITE);
+
             quickKeys.removeAllViews();
             int pillBg = isDark ? 0xFF2C3038 : Color.WHITE;
             for (RemoteShortcuts.Item item : shortcutPanel.store.pinnedQuickBar(hostPlatform)) {
@@ -527,11 +560,22 @@ final class RemoteKeyboard extends LinearLayout {
                 lp.rightMargin = ui.dp(5);
                 quickKeys.addView(pill, lp);
             }
+            // Append one-tap Chinese punctuation pills right in the quick strip
+            int punctBg = isDark ? 0xFF252932 : 0xFFF3F5F8;
+            for (String punct : QUICK_CN_PUNCT) {
+                TextView pill = smallButton(punct, () -> sendLiteralText(punct));
+                pill.setBackground(ui.background(punctBg, 7));
+                pill.setPadding(ui.dp(9), 0, ui.dp(9), 0);
+                LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, ui.dp(30));
+                lp.rightMargin = ui.dp(4);
+                quickKeys.addView(pill, lp);
+            }
         }
 
         keys.setVisibility(computer ? VISIBLE : GONE);
         layoutWidth = layoutHeight = 0;
         renderKeysIfNeeded(getMeasuredWidth());
+        requestLayout();
     }
 
     private void styleSubPageButtons(TextView[] btns, boolean isDark) {
@@ -551,8 +595,7 @@ final class RemoteKeyboard extends LinearLayout {
         layoutHeight = height;
         keys.removeAllViews();
 
-        // Sync inline vs narrow sub-page visibility when width becomes known
-        boolean showInline = activeTab == TAB_PC_KEYBOARD && width >= ui.dp(540);
+        boolean showInline = activeTab == TAB_PC_KEYBOARD && width >= ui.dp(620);
         if ((inlineSubPagesBox.getVisibility() == VISIBLE) != showInline) {
             inlineSubPagesBox.setVisibility(showInline ? VISIBLE : GONE);
             if (showInline) styleSubPageButtons(inlineSubPageBtns, dark());
@@ -564,15 +607,13 @@ final class RemoteKeyboard extends LinearLayout {
         }
 
         boolean isDark = dark();
-        // On narrow portrait (< 540dp), place sub-page selector cleanly at top of keybed
-        if (width < ui.dp(540)) {
+        if (width < ui.dp(620)) {
             LinearLayout subBar = ui.row();
             subBar.setPadding(ui.dp(3), 0, ui.dp(3), ui.dp(3));
-            String[] subTitles = {L10n.tr("主键盘"), L10n.tr("功能符号"), L10n.tr("小键盘")};
-            TextView[] localBtns = new TextView[3];
-            for (int i = 0; i < 3; i++) {
+            TextView[] localBtns = new TextView[4];
+            for (int i = 0; i < 4; i++) {
                 final int subIdx = i;
-                TextView btn = smallButton(subTitles[i], () -> selectSubPage(subIdx));
+                TextView btn = smallButton(L10n.tr(SUBPAGE_TITLES[i]), () -> selectSubPage(subIdx));
                 localBtns[i] = btn;
                 LayoutParams lp = new LayoutParams(0, ui.dp(28), 1f);
                 if (i > 0) lp.leftMargin = ui.dp(4);
@@ -582,7 +623,7 @@ final class RemoteKeyboard extends LinearLayout {
             keys.addView(subBar, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         }
 
-        // Persistent Modifier Row: [组合键模式] | [Ctrl] | [Shift] | [Alt] | [Win]
+        // Persistent Modifier Row: [组合键模式] | [中/英] | [Ctrl] | [Shift] | [Alt] | [Win]
         keys.addView(buildPersistentModifierRow(isDark),
                 new LayoutParams(LayoutParams.MATCH_PARENT, ui.dp(34)));
 
@@ -594,6 +635,8 @@ final class RemoteKeyboard extends LinearLayout {
             buildMainQwertyPage(bed);
         } else if (pcSubPage == SUBPAGE_FUNC_SYM) {
             buildFunctionSymbolPage(bed, width >= ui.dp(520));
+        } else if (pcSubPage == SUBPAGE_CN_PUNCT) {
+            buildChinesePunctuationPage(bed);
         } else {
             buildNumpadPage(bed);
         }
@@ -603,7 +646,7 @@ final class RemoteKeyboard extends LinearLayout {
         LinearLayout row = ui.row();
         row.setPadding(ui.dp(2), ui.dp(1), ui.dp(2), ui.dp(2));
 
-        TextView stickyBtn = smallButton(L10n.tr("组合键模式"), () -> {
+        TextView stickyBtn = smallButton(L10n.tr("组合键"), () -> {
             stickyComboMode = !stickyComboMode;
             if (!stickyComboMode) {
                 for (int mod : lockedModifiers) actions.keyHold(mod, false);
@@ -618,14 +661,22 @@ final class RemoteKeyboard extends LinearLayout {
             render();
         });
         stickyBtn.setTextSize(11);
-        stickyBtn.setPadding(ui.dp(8), 0, ui.dp(8), 0);
-        GradientDrawable stickyBg = ui.background(
-                stickyComboMode ? MobileUi.BLUE : (isDark ? 0xFF2B2E36 : 0xFFD2D6DE), 7);
-        stickyBtn.setBackground(stickyBg);
+        stickyBtn.setPadding(ui.dp(7), 0, ui.dp(7), 0);
+        stickyBtn.setBackground(ui.background(
+                stickyComboMode ? MobileUi.BLUE : (isDark ? 0xFF2B2E36 : 0xFFD2D6DE), 7));
         stickyBtn.setTextColor(stickyComboMode ? Color.WHITE : foreground());
         LayoutParams stickyLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT);
         stickyLp.setMargins(ui.dp(2), ui.dp(1), ui.dp(2), ui.dp(1));
         row.addView(stickyBtn, stickyLp);
+
+        TextView langBtn = smallButton(L10n.tr("中/英"), this::toggleRemoteIme);
+        langBtn.setTextSize(11);
+        langBtn.setPadding(ui.dp(7), 0, ui.dp(7), 0);
+        langBtn.setBackground(ui.background(isDark ? 0xFF2B2E36 : 0xFFD2D6DE, 7));
+        langBtn.setTextColor(foreground());
+        LayoutParams langLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT);
+        langLp.setMargins(ui.dp(2), ui.dp(1), ui.dp(2), ui.dp(1));
+        row.addView(langBtn, langLp);
 
         int[] modCodes = {
                 KeyCatalog.VK_LCONTROL,
@@ -669,7 +720,6 @@ final class RemoteKeyboard extends LinearLayout {
 
     private void fireKey(int vkCode) {
         if (stickyComboMode) {
-            // Locked modifiers are already held down on the remote host; tap the key while keeping modifiers locked.
             actions.key(vkCode);
         } else if (!oneShotModifiers.isEmpty()) {
             int[] mods = oneShotModifiers.stream().mapToInt(Integer::intValue).toArray();
@@ -682,27 +732,40 @@ final class RemoteKeyboard extends LinearLayout {
         }
     }
 
+    private static boolean isRepeatableVk(int vk) {
+        return vk == KeyCatalog.VK_BACK || vk == KeyCatalog.VK_DELETE
+                || vk == KeyCatalog.VK_LEFT || vk == KeyCatalog.VK_UP
+                || vk == KeyCatalog.VK_DOWN || vk == KeyCatalog.VK_RIGHT
+                || vk == KeyCatalog.VK_SPACE;
+    }
+
     private static final class KeySpec {
         final String label;
         final String shiftedLabel;
         final int vk;
+        final String literalText;
         final float weight;
         final boolean special;
 
-        KeySpec(String label, String shiftedLabel, int vk, float weight, boolean special) {
+        KeySpec(String label, String shiftedLabel, int vk, String literalText, float weight, boolean special) {
             this.label = label;
             this.shiftedLabel = shiftedLabel;
             this.vk = vk;
+            this.literalText = literalText;
             this.weight = weight;
             this.special = special;
         }
 
         static KeySpec ch(String plain, String shifted, int vk) {
-            return new KeySpec(plain, shifted, vk, 1f, false);
+            return new KeySpec(plain, shifted, vk, null, 1f, false);
         }
 
         static KeySpec fn(String label, int vk, float weight) {
-            return new KeySpec(label, label, vk, weight, true);
+            return new KeySpec(label, label, vk, null, weight, true);
+        }
+
+        static KeySpec txt(String label, String text, float weight) {
+            return new KeySpec(label, label, 0, text, weight, false);
         }
     }
 
@@ -778,7 +841,6 @@ final class RemoteKeyboard extends LinearLayout {
             bed.addView(buildSpecRow(f2), new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
         }
 
-        // Full symbol row: ` - = [ ] \ ; ' , . /
         KeySpec[] symRow = new KeySpec[]{
                 KeySpec.ch("`", "~", KeyCatalog.VK_OEM_3),
                 KeySpec.ch("-", "_", KeyCatalog.VK_OEM_MINUS),
@@ -821,6 +883,52 @@ final class RemoteKeyboard extends LinearLayout {
         bed.addView(buildSpecRow(navRow2), new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
     }
 
+    private void buildChinesePunctuationPage(LinearLayout bed) {
+        KeySpec[][] rows = new KeySpec[][]{
+                {
+                        KeySpec.txt("，", "，", 1f),
+                        KeySpec.txt("。", "。", 1f),
+                        KeySpec.txt("？", "？", 1f),
+                        KeySpec.txt("！", "！", 1f),
+                        KeySpec.txt("、", "、", 1f),
+                        KeySpec.txt("：", "：", 1f),
+                        KeySpec.txt("；", "；", 1f),
+                        KeySpec.fn("⌫", KeyCatalog.VK_BACK, 1.25f)
+                },
+                {
+                        KeySpec.txt("“", "“", 1f),
+                        KeySpec.txt("”", "”", 1f),
+                        KeySpec.txt("‘", "‘", 1f),
+                        KeySpec.txt("’", "’", 1f),
+                        KeySpec.txt("（", "（", 1f),
+                        KeySpec.txt("）", "）", 1f),
+                        KeySpec.txt("【", "【", 1f),
+                        KeySpec.txt("】", "】", 1f)
+                },
+                {
+                        KeySpec.txt("《", "《", 1f),
+                        KeySpec.txt("》", "》", 1f),
+                        KeySpec.txt("——", "——", 1.15f),
+                        KeySpec.txt("……", "……", 1.15f),
+                        KeySpec.txt("·", "·", 1f),
+                        KeySpec.txt("￥", "￥", 1f),
+                        KeySpec.txt("～", "～", 1f),
+                        KeySpec.fn("Enter", KeyCatalog.VK_RETURN, 1.35f)
+                },
+                {
+                        KeySpec.fn(L10n.tr("切至中文打字"), -99, 2.0f),
+                        KeySpec.fn(L10n.tr("空格"), KeyCatalog.VK_SPACE, 2.4f),
+                        KeySpec.fn("←", KeyCatalog.VK_LEFT, 1f),
+                        KeySpec.fn("↑", KeyCatalog.VK_UP, 1f),
+                        KeySpec.fn("↓", KeyCatalog.VK_DOWN, 1f),
+                        KeySpec.fn("→", KeyCatalog.VK_RIGHT, 1f)
+                }
+        };
+        for (KeySpec[] r : rows) {
+            bed.addView(buildSpecRow(r), new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
+        }
+    }
+
     private void buildNumpadPage(LinearLayout bed) {
         KeySpec[][] rows = new KeySpec[][]{
                 {
@@ -848,17 +956,10 @@ final class RemoteKeyboard extends LinearLayout {
                         KeySpec.fn("Enter", KeyCatalog.VK_RETURN, 1f)
                 },
                 {
-                        KeySpec.ch("0", "0", KeyCatalog.VK_NUMPAD0),
-                        KeySpec.ch("00", "00", -1), // special double-zero convenience or wide 0
+                        new KeySpec("0", "0", KeyCatalog.VK_NUMPAD0, null, 2f, false),
                         KeySpec.fn(".", KeyCatalog.VK_DECIMAL, 1f),
-                        KeySpec.fn("Tab", KeyCatalog.VK_TAB, 1f)
+                        KeySpec.fn(L10n.tr("空格"), KeyCatalog.VK_SPACE, 1f)
                 }
-        };
-        // Make Numpad 0 double-wide cleanly
-        rows[4] = new KeySpec[]{
-                new KeySpec("0", "0", KeyCatalog.VK_NUMPAD0, 2f, false),
-                KeySpec.fn(".", KeyCatalog.VK_DECIMAL, 1f),
-                KeySpec.fn(L10n.tr("空格"), KeyCatalog.VK_SPACE, 1f)
         };
         for (KeySpec[] r : rows) {
             bed.addView(buildSpecRow(r), new LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
@@ -873,7 +974,18 @@ final class RemoteKeyboard extends LinearLayout {
 
         for (KeySpec spec : specs) {
             String shown = shiftActive ? spec.shiftedLabel : spec.label;
-            TextView key = smallButton(shown, () -> fireKey(spec.vk));
+            Runnable action;
+            if (spec.vk == -99) {
+                action = () -> selectTab(TAB_IME);
+            } else if (spec.literalText != null) {
+                action = () -> sendLiteralText(spec.literalText);
+            } else {
+                action = () -> fireKey(spec.vk);
+            }
+
+            TextView key = (spec.literalText == null && isRepeatableVk(spec.vk))
+                    ? repeatableButton(shown, "⌫".equals(shown) ? L10n.tr("退格") : shown, action)
+                    : smallButton(shown, action);
             key.setPadding(ui.dp(2), 0, ui.dp(2), 0);
             key.setSingleLine(true);
             key.setGravity(Gravity.CENTER);
@@ -885,9 +997,10 @@ final class RemoteKeyboard extends LinearLayout {
             }
             if ("⌫".equals(shown)) key.setContentDescription(L10n.tr("退格"));
 
-            int normalColor = spec.special
-                    ? (isDark ? 0xFF2D313A : 0xFFD2D7DF)
+            int normalColor = spec.vk == -99 ? MobileUi.BLUE
+                    : spec.special ? (isDark ? 0xFF2D313A : 0xFFD2D7DF)
                     : (isDark ? 0xFF3A3F48 : Color.WHITE);
+            if (spec.vk == -99) key.setTextColor(Color.WHITE);
             int pressedColor = isDark ? 0xFF5A6372 : 0xFFB8C4D6;
             StateListDrawable bg = new StateListDrawable();
             bg.addState(new int[]{android.R.attr.state_pressed}, ui.background(pressedColor, 7));
@@ -904,17 +1017,6 @@ final class RemoteKeyboard extends LinearLayout {
     @Override protected void onMeasure(int widthSpec, int heightSpec) {
         renderKeysIfNeeded(MeasureSpec.getSize(widthSpec));
         super.onMeasure(widthSpec, heightSpec);
-    }
-
-    @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
-        super.onSizeChanged(width, height, oldWidth, oldHeight);
-        if (opened && computer && (width != oldWidth || height != oldHeight) && heights.get(sizeKey(), 0) == 0) {
-            post(() -> {
-                if (opened && computer && !switching && !measuring && transition == null && heights.get(sizeKey(), 0) == 0) {
-                    changeIme(false, true, true);
-                }
-            });
-        }
     }
 
     @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
