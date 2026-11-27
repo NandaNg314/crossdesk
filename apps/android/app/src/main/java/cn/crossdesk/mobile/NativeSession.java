@@ -317,19 +317,63 @@ final class NativeSession implements AutoCloseable {
             finally{if(pressMain)nKey(handle,mainKey,false);for(int i=keys.length-1;i>=0;i--)nKey(handle,keys[i],false);}
         });
     }
-    boolean textEdit(int deletions,String text) {
-        byte[] bytes=text.getBytes(StandardCharsets.UTF_8);
-        boolean unicode=supportsTextInput;
-        if(closed||!connected||deletions<0||deletions>4096||bytes.length>16*1024||text.indexOf('\0')>=0)return false;
-        if(!unicode)for(char ch:text.toCharArray())if(KeyMap.ascii(ch)==0)return false;
+    boolean textEdit(int deletions, String text) {
+        return textEdit(deletions, text, "windows");
+    }
+
+    boolean textEdit(int deletions, String text, String platform) {
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        boolean unicode = supportsTextInput;
+        if (closed || !connected || deletions < 0 || deletions > 4096
+                || bytes.length > 16 * 1024 || text.indexOf('\0') >= 0) {
+            return false;
+        }
+        boolean allAscii = true;
+        if (!unicode) {
+            for (int i = 0; i < text.length(); i++) {
+                if (KeyMap.ascii(text.charAt(i)) == 0) {
+                    allAscii = false;
+                    break;
+                }
+            }
+        }
+        final boolean asciiOnly = allAscii;
+        boolean mac = "macos".equals(platform);
         // Validate the entire edit before deleting anything. One RTC task preserves order.
-        execute(()->{
-            if(!connected)return;
-            for(int i=0;i<deletions;i++){nKey(handle,8,true);nKey(handle,8,false);}
-            if(unicode){if(bytes.length>0)nText(handle,bytes);}
-            else for(char ch:text.toCharArray()){
-                int code=KeyMap.ascii(ch);boolean shift=(code&0x100)!=0;
-                if(shift)nKey(handle,KeyCatalog.VK_LSHIFT,true);nKey(handle,code&255,true);nKey(handle,code&255,false);if(shift)nKey(handle,KeyCatalog.VK_LSHIFT,false);
+        execute(() -> {
+            if (!connected || handle == 0) return;
+            for (int i = 0; i < deletions; i++) {
+                nKey(handle, 8, true);
+                nKey(handle, 8, false);
+            }
+            if (bytes.length == 0) return;
+            if (unicode) {
+                nText(handle, bytes);
+            } else if (asciiOnly) {
+                for (char ch : text.toCharArray()) {
+                    int code = KeyMap.ascii(ch);
+                    boolean shift = (code & 0x100) != 0;
+                    if (shift) nKey(handle, KeyCatalog.VK_LSHIFT, true);
+                    nKey(handle, code & 255, true);
+                    nKey(handle, code & 255, false);
+                    if (shift) nKey(handle, KeyCatalog.VK_LSHIFT, false);
+                }
+            } else {
+                // Fallback for hosts without direct UTF-8 text_input (e.g. Linux or early handshake):
+                // seamlessly sync clipboard and paste so Chinese input still works reliably.
+                if (nClipboard(handle, bytes)) {
+                    try { Thread.sleep(25); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    if (!closed && connected && handle != 0) {
+                        int mod = mac ? KeyCatalog.VK_LWIN : KeyCatalog.VK_LCONTROL;
+                        try {
+                            nKey(handle, mod, true);
+                            nKey(handle, 'V', true);
+                        } finally {
+                            nKey(handle, 'V', false);
+                            nKey(handle, mod, false);
+                        }
+                    }
+                }
             }
         });
         return true;

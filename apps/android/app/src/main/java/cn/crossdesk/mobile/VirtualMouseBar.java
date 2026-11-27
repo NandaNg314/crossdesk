@@ -182,7 +182,7 @@ final class VirtualMouseBar extends FrameLayout {
         collapseBtn.setElevation(ui.dp(10));
         collapseBtn.setContentDescription(L10n.tr("收起虚拟鼠标"));
         collapseBtn.setClickable(true);
-        collapseBtn.setFocusable(true);
+        collapseBtn.setFocusable(false);
         collapseBtn.addView(ui.icon("close", 0xFFF2F4F8),
                 new LayoutParams(ui.dp(12), ui.dp(12), Gravity.CENTER));
         collapseBtn.setOnClickListener(v -> {
@@ -243,7 +243,7 @@ final class VirtualMouseBar extends FrameLayout {
     @SuppressLint("ClickableViewAccessibility")
     private void attachCollapsedDragAndTap(View handle, Runnable onTap) {
         handle.setClickable(true);
-        handle.setFocusable(true);
+        handle.setFocusable(false);
         if (onTap != null) handle.setOnClickListener(v -> onTap.run());
         float slop = ui.dp(4f);
         handle.setOnTouchListener(new OnTouchListener() {
@@ -352,7 +352,7 @@ final class VirtualMouseBar extends FrameLayout {
     @SuppressLint("ClickableViewAccessibility")
     private void attachCoupledPalmDrag(View palm) {
         palm.setClickable(true);
-        palm.setFocusable(true);
+        palm.setFocusable(false);
         float slop = 1.2f * density;
         palm.setOnTouchListener(new OnTouchListener() {
             int pointer = -1, startedGen;
@@ -421,7 +421,7 @@ final class VirtualMouseBar extends FrameLayout {
         View plate = new View(ui.context);
         plate.setContentDescription(desc);
         plate.setClickable(true);
-        plate.setFocusable(true);
+        plate.setFocusable(false);
         plate.setOnClickListener(v -> {
             input.virtualButton(buttonCode, true);
             input.virtualButton(buttonCode, false);
@@ -513,7 +513,7 @@ final class VirtualMouseBar extends FrameLayout {
         View box = new View(ui.context);
         box.setContentDescription(L10n.tr("鼠标中键，轻触点击或按住拖动"));
         box.setClickable(true);
-        box.setFocusable(true);
+        box.setFocusable(false);
         box.setOnClickListener(v -> {
             input.virtualMiddle(true);
             input.virtualMiddle(false);
@@ -599,7 +599,7 @@ final class VirtualMouseBar extends FrameLayout {
         View wheel = new View(ui.context);
         wheel.setContentDescription(L10n.tr("向上滚动，可上下滑动连续滚轮"));
         wheel.setClickable(true);
-        wheel.setFocusable(true);
+        wheel.setFocusable(false);
         wheel.setOnClickListener(v -> input.scroll(1));
 
         int touchSlop = ViewConfiguration.get(ui.context).getScaledTouchSlop();

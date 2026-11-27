@@ -86,6 +86,7 @@ public class ControllerTest {
         assertEquals(0xDB | 0x100, KeyMap.ascii('{'));
         assertEquals(0x31 | 0x100, KeyMap.ascii('!'));
         assertEquals(0, KeyMap.ascii('中'));
+        assertEquals(0, KeyMap.ascii('，'));
     }
 
     @Test public void mouseInputSupportsMiddleButtonAndCleanRelease() {
