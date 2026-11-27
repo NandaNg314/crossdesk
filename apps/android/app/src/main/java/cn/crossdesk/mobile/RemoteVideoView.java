@@ -926,12 +926,16 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
     private final class Cursor extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path arrow = new Path();
+        private final float cursorScale;
 
         Cursor(Context context) {
             super(context);
             setClickable(true);
             setContentDescription(L10n.tr("远程桌面触控区域"));
-            // High-craft Windows 11 / macOS sculpted desktop pointer arrow (~17 x 23.5 dp)
+            android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
+            float shortSideDp = Math.min(dm.widthPixels, dm.heightPixels) / Math.max(1f, dm.density);
+            cursorScale = shortSideDp < 540f ? 0.64f : 0.76f;
+            // High-craft Windows 11 / macOS sculpted desktop pointer arrow
             // Hotspot tip is anchored cleanly at (0, 0).
             arrow.moveTo(0f, 0f);
             arrow.lineTo(0f, 19.2f);
@@ -966,7 +970,7 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
             int alphaInt = Math.max(0, Math.min(255, Math.round(alpha * 255f)));
             int saved = canvas.save();
             canvas.translate(viewport.left() + x * viewport.width(), viewport.top() + y * viewport.height());
-            canvas.scale(density, density);
+            canvas.scale(density * cursorScale, density * cursorScale);
 
             if (buttonActive) {
                 paint.setStyle(Paint.Style.FILL);
@@ -988,16 +992,16 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
 
             // Soft drop shadow so the white pointer reads clearly over bright white documents
             int shadowSave = canvas.save();
-            canvas.translate(0.85f, 1.45f);
+            canvas.translate(0.75f, 1.25f);
             paint.setStyle(Paint.Style.FILL_AND_STROKE);
-            paint.setStrokeWidth(2.1f);
+            paint.setStrokeWidth(1.8f);
             paint.setColor(Color.argb(Math.round(alpha * 92f), 0, 0, 0));
             canvas.drawPath(arrow, paint);
             canvas.restoreToCount(shadowSave);
 
             // Crisp dark charcoal outline + bright white body
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2.0f);
+            paint.setStrokeWidth(1.75f);
             paint.setColor(Color.argb(alphaInt, 0x14, 0x16, 0x1B));
             canvas.drawPath(arrow, paint);
 
