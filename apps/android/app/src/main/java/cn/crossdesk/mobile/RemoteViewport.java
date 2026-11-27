@@ -9,12 +9,23 @@ final class RemoteViewport {
     private int keyboardInset;
     private float pointerInset;
     private float scale = 1, offsetX, offsetY;
+    private boolean fillScreen;
+
+    void setFillScreen(boolean value) {
+        fillScreen = value;
+    }
+
+    boolean isFillScreen() {
+        return fillScreen;
+    }
 
     void fit(int width, int height, int videoWidth, int videoHeight) {
         if (width <= 0 || height <= 0 || videoWidth <= 0 || videoHeight <= 0) return;
         containerWidth = width;
         containerHeight = height;
-        double fitScale = Math.min((double) width / videoWidth, (double) height / videoHeight);
+        double fitScale = fillScreen
+                ? Math.max((double) width / videoWidth, (double) height / videoHeight)
+                : Math.min((double) width / videoWidth, (double) height / videoHeight);
         baseWidth = Math.max(1, (int) (videoWidth * fitScale));
         baseHeight = Math.max(1, (int) (videoHeight * fitScale));
         // Match the integer positioning of Gravity.CENTER, including odd margins.

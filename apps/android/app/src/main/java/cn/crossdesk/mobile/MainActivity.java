@@ -551,6 +551,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         else remoteOrientation.begin(autoLandscape,!isTablet()&&!isInMultiWindowMode());
         video=new RemoteVideoView(this,session);
         video.setRelative(preferences.getBoolean("relativeMouse",true));
+        video.setFillScreen(preferences.getBoolean("videoFillScreen",false));
         video.setViewOnly(initialViewOnly);
         keymapOverlay=new FloatingKeymapOverlay(this,ui,keymapStore,video.mouseInput,new FloatingKeymapOverlay.Host(){
             public void key(int code,boolean down){if(ready&&session!=null&&!video.isViewOnly())session.key(code,down);}
@@ -561,8 +562,8 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         });
         keymapOverlay.setPlatform(hostPlatform);
         keymapOverlay.attachVideo(video);
-        // Video, floating keymap, cursor and touch input share the area inside system bars and cutouts.
-        safeArea.addView(keymapOverlay,0,new FrameLayout.LayoutParams(-1,-1));
+        // Video spans the full physical display (centered without notch bias), while controls stay inside safeArea.
+        canvas.addView(keymapOverlay,0,new FrameLayout.LayoutParams(-1,-1));
         Runnable syncKeymap=()->{
             if(keymapOverlay!=null){
                 keymapOverlay.setSuppressed(controls!=null&&controls.isOverlayBlockingKeymap());
@@ -623,9 +624,10 @@ public final class MainActivity extends Activity implements NativeSession.Listen
             public void mouse(){boolean relative=!preferences.getBoolean("relativeMouse",true);setRelativeMouse(relative);}
             public void displayResolution(RemoteDisplayResolutions.Mode mode){updateDisplayResolution(mode);}
             public void videoSettings(int field,int value){RemoteVideoSettings.Values old=MainActivity.this.videoSettings.selection;updateVideoSettings(new RemoteVideoSettings.Values(field==0?value:old.quality,field==1?value:old.frameRate,field==2?value:old.preference));}
+            public void setVideoFillScreen(boolean fill){if(video!=null)video.setFillScreen(fill);}
         });
         controls.setExpandedMouseVisibilityListener(expandedVisible->{if(video!=null)video.setForceCursorVisible(expandedVisible);});
-        video.cursorPositionListener=(sx,sy,fromScreenTouch)->{if(controls!=null)controls.onCursorPositionChanged(sx,sy,fromScreenTouch);};
+        video.cursorPositionListener=(sx,sy,fromScreenTouch)->{if(controls!=null)controls.onCursorPositionChanged(sx-safeArea.getLeft(),sy-safeArea.getTop(),fromScreenTouch);};
         controls.setHostPlatform(hostPlatform);controls.setRelative(preferences.getBoolean("relativeMouse",true));controls.setViewOnly(initialViewOnly);controls.setMuted(muted);controls.videoSettings(videoSettings);controls.displayResolutions(displayResolutions,selectedDisplay);root.addView(controls,new LinearLayout.LayoutParams(-1,-1));getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         controls.attachMouseBar(safeArea,safeArea.indexOfChild(root),new VirtualMouseBar(ui,video.mouseInput));
         syncKeymap.run();
@@ -633,7 +635,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
         video.remoteFocusChanged=()->{if(controls!=null)controls.resetKeyboardContext();};
         controls.requestApplyInsets();
         video.addOnLayoutChangeListener((view,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
-            if(controls!=null&&video!=null)controls.onCursorPositionChanged(video.cursorScreenX(),video.cursorScreenY(),false);
+            if(controls!=null&&video!=null)controls.onCursorPositionChanged(video.cursorScreenX()-safeArea.getLeft(),video.cursorScreenY()-safeArea.getTop(),false);
             if(!pictureInPictureUi&&!isInPictureInPictureMode())updatePictureInPicture();
         });
         pictureInPicture.connected();updatePictureInPicture();
@@ -1183,7 +1185,7 @@ public final class MainActivity extends Activity implements NativeSession.Listen
             session.privacyScreen.canLock(android.os.SystemClock.elapsedRealtime()));
     }
     @Override public void videoSize(int width,int height){videoWidth=width;videoHeight=height;if(video!=null)video.videoSize(width,height);if(controls!=null)controls.videoSize(width,height);pictureInPicture.videoSize(width,height);updatePictureInPicture();}
-    @Override public void clipboard(String value){remoteClipboard=value;}
+    @Override public void clipboard(String value){remoteClipboard=value;if(session!=null)session.setHostClipboardSnapshot(value);}
     @Override public void statistics(RemoteNetworkStatistics.Snapshot value){if(controls!=null)controls.statistics(value);if(value.fps>0)capturePreviewIfNeeded();}
     @Override public boolean dispatchKeyEvent(KeyEvent event){
         if (privacyUnlockDialog != null) return super.dispatchKeyEvent(event);

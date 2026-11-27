@@ -53,6 +53,7 @@ final class SessionControls extends FrameLayout {
         void mouse();
         default boolean textEdit(int deletions, String value) { return false; }
         void videoSettings(int field, int value);
+        default void setVideoFillScreen(boolean fill) { }
         default void displayResolution(RemoteDisplayResolutions.Mode mode) { }
         void sendFile();
         void saveFile();

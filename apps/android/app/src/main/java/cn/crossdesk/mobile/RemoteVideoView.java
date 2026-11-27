@@ -160,6 +160,13 @@ final class RemoteVideoView extends FrameLayout implements SurfaceHolder.Callbac
         naturalScroll = PointerBallistics.loadNaturalScroll(prefs);
     }
 
+    void setFillScreen(boolean value) {
+        if (viewport.isFillScreen() == value) return;
+        viewport.setFillScreen(value);
+        viewport.reset();
+        fit();
+    }
+
     void setRelative(boolean value) {
         releaseMouse();
         relative = value;

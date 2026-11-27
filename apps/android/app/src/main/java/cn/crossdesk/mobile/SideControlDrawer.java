@@ -570,6 +570,15 @@ final class SideControlDrawer extends LinearLayout {
         ui.gap(card, 12);
         videoRows.add(new VideoSegmentRow(card, 2, L10n.tr("画面偏好"),
                 RemoteVideoSettings.preferences(), new int[]{0, 1, 2}));
+        ui.gap(card, 12);
+        card.addView(darkText(L10n.tr("全面屏比例"), 12, false, TEXT_SECONDARY));
+        ui.gap(card, 6);
+        int fillIdx = mousePrefs.getBoolean("videoFillScreen", false) ? 1 : 0;
+        card.addView(darkSegments(new String[]{L10n.tr("完整适应"), L10n.tr("铺满全屏")}, fillIdx, true, index -> {
+            boolean fill = index == 1;
+            mousePrefs.edit().putBoolean("videoFillScreen", fill).apply();
+            actions.setVideoFillScreen(fill);
+        }));
         body.addView(card);
         renderVideoSubPage();
     }
