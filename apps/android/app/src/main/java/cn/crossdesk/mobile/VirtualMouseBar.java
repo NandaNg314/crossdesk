@@ -22,9 +22,11 @@ import android.widget.FrameLayout;
 
 /**
  * UU Remote-style two-state floating virtual mouse:
- * 1) Collapsed (44x44 dp): Draggable dark translucent badge with crisp white filled mouse icon.
- * 2) Expanded (98x114 dp body + exterior 24x24 dp close badge): Compact ergonomic top-down mouse
+ * 1) Collapsed (34/38 dp): Draggable dark translucent badge with crisp white filled mouse icon.
+ * 2) Expanded (adaptive compact body + exterior close badge): Compact ergonomic top-down mouse
  *    rigidly coupled to the desktop cursor arrow (can smoothly slide off-screen at edges):
+ *    - Phone (<540dp short side): 58x68 dp body + 18dp close badge (minimal screen footprint)
+ *    - Tablet (>=540dp short side): 72x84 dp body + 20dp close badge
  *    - Upper Left / Right sculpted click plates with 4.0dp zero-jitter deadzone + coupled drag
  *    - Center stadium Scroll Wheel (tap up/down + continuous swipe with fractional accumulator)
  *    - Center Middle button ("=" pill straddling seam: tap middle click, hold+slide smooth move)
@@ -33,17 +35,17 @@ import android.widget.FrameLayout;
  */
 @SuppressLint("ViewConstructor")
 final class VirtualMouseBar extends FrameLayout {
-    static final int COLLAPSED_SIZE_DP = 44;
-    static final int BODY_WIDTH_DP = 98;
-    static final int BODY_HEIGHT_DP = 114;
-    static final int CLOSE_BADGE_DP = 24;
+    static final int COLLAPSED_SIZE_DP = 38;
+    static final int BODY_WIDTH_DP = 72;
+    static final int BODY_HEIGHT_DP = 84;
+    static final int CLOSE_BADGE_DP = 20;
     static final int TOP_OVERHANG_DP = 0;
-    static final int RIGHT_OVERHANG_DP = 28; // 4dp gap + 24dp badge outside right shoulder
+    static final int RIGHT_OVERHANG_DP = 24; // 4dp gap + 20dp badge outside right shoulder
     static final int EXPANDED_WIDTH_DP = BODY_WIDTH_DP + RIGHT_OVERHANG_DP;
     static final int EXPANDED_HEIGHT_DP = BODY_HEIGHT_DP + TOP_OVERHANG_DP;
 
     // Cursor arrow tip sits cleanly off the upper-left shoulder of the expanded mouse body.
-    static final float COUPLED_OFFSET_X_DP = 18f;
+    static final float COUPLED_OFFSET_X_DP = 14f;
     static final float COUPLED_OFFSET_Y_DP = -2f;
 
     private static final float EDGE_GLIDE_ZONE_DP = 16f;
@@ -67,6 +69,14 @@ final class VirtualMouseBar extends FrameLayout {
     private final RemoteMouseInput input;
     private final MobileUi ui;
     private final float density;
+    private final int collapsedSizeDp;
+    private final int bodyWidthDp;
+    private final int bodyHeightDp;
+    private final int closeBadgeDp;
+    private final int closeGapDp;
+    private final int expandedWidthDp;
+    private final int expandedHeightDp;
+    private final float coupledOffsetXDp;
     private PositionHost positionHost;
     private boolean expanded;
     private int generation;
@@ -104,33 +114,49 @@ final class VirtualMouseBar extends FrameLayout {
         super(ui.context);
         this.ui = ui;
         this.input = input;
-        this.density = ui.context.getResources().getDisplayMetrics().density;
+        DisplayMetrics dm = ui.context.getResources().getDisplayMetrics();
+        this.density = dm.density;
+        float shortSideDp = Math.min(dm.widthPixels, dm.heightPixels) / Math.max(1f, density);
+        boolean compactPhone = shortSideDp < 540f;
+        float tinyScale = compactPhone && shortSideDp < 350f
+                ? Math.max(0.85f, shortSideDp / 360f)
+                : 1f;
+        this.collapsedSizeDp = compactPhone ? 34 : COLLAPSED_SIZE_DP;
+        this.bodyWidthDp = Math.round((compactPhone ? 58 : BODY_WIDTH_DP) * tinyScale);
+        this.bodyHeightDp = Math.round((compactPhone ? 68 : BODY_HEIGHT_DP) * tinyScale);
+        this.closeBadgeDp = compactPhone ? 18 : CLOSE_BADGE_DP;
+        this.closeGapDp = compactPhone ? 3 : 4;
+        this.expandedWidthDp = bodyWidthDp + closeGapDp + closeBadgeDp;
+        this.expandedHeightDp = bodyHeightDp + TOP_OVERHANG_DP;
+        this.coupledOffsetXDp = compactPhone ? 12f : COUPLED_OFFSET_X_DP;
+
         setMotionEventSplittingEnabled(true);
         setClipChildren(false);
         setClipToPadding(false);
 
-        // 1. Collapsed 44x44 dp floating mini mouse badge
+        // 1. Collapsed floating mini mouse badge
         collapsedButton = new FrameLayout(ui.context);
-        GradientDrawable orbBg = ui.background(0xC41D1F27, 22);
+        GradientDrawable orbBg = ui.background(0xC41D1F27, collapsedSizeDp / 2);
         orbBg.setStroke(Math.max(1, ui.dp(1f)), 0x38FFFFFF);
         collapsedButton.setBackground(orbBg);
         collapsedButton.setElevation(ui.dp(6));
         collapsedButton.setContentDescription(L10n.tr("展开虚拟鼠标"));
         collapsedButton.addView(new CollapsedMouseGlyph(ui.context),
-                new LayoutParams(ui.dp(22), ui.dp(26), Gravity.CENTER));
+                new LayoutParams(ui.dp(collapsedSizeDp * 0.5f), ui.dp(collapsedSizeDp * 0.59f), Gravity.CENTER));
         attachCollapsedDragAndTap(collapsedButton, () -> setExpanded(true));
-        addView(collapsedButton, new LayoutParams(ui.dp(COLLAPSED_SIZE_DP), ui.dp(COLLAPSED_SIZE_DP)));
+        addView(collapsedButton, new LayoutParams(ui.dp(collapsedSizeDp), ui.dp(collapsedSizeDp)));
 
-        // 2. Expanded compact UU-proportioned mouse container (98x114 dp body + exterior close badge)
+        // 2. Expanded compact UU-proportioned mouse container
         expandedShell = new FrameLayout(ui.context);
         expandedShell.setMotionEventSplittingEnabled(true);
         expandedShell.setClipChildren(false);
         expandedShell.setClipToPadding(false);
         expandedShell.setVisibility(GONE);
 
-        int bodyW = ui.dp(BODY_WIDTH_DP);
-        int bodyH = ui.dp(BODY_HEIGHT_DP);
+        int bodyW = ui.dp(bodyWidthDp);
+        int bodyH = ui.dp(bodyHeightDp);
         int topInset = ui.dp(TOP_OVERHANG_DP);
+        float scale = bodyWidthDp / 98f;
 
         FrameLayout bodyContainer = new FrameLayout(ui.context);
         bodyContainer.setMotionEventSplittingEnabled(true);
@@ -158,16 +184,20 @@ final class VirtualMouseBar extends FrameLayout {
         palmLp.topMargin = seamY;
         bodyContainer.addView(dragHandle, palmLp);
 
-        // Center Scroll Wheel hit area (30x42 dp over 20x36 dp pill)
+        // Center Scroll Wheel hit area (scaled proportionally, minimum 22dp wide for reliable touch)
         View wheelTouch = createWheelTouchZone();
-        LayoutParams wheelLp = new LayoutParams(ui.dp(30), ui.dp(42), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        wheelLp.topMargin = ui.dp(6);
+        int wheelTouchW = Math.max(ui.dp(22), Math.round(ui.dp(30f * scale)));
+        int wheelTouchH = Math.max(ui.dp(24), Math.round(ui.dp(42f * scale)));
+        LayoutParams wheelLp = new LayoutParams(wheelTouchW, wheelTouchH, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        wheelLp.topMargin = Math.max(ui.dp(3), Math.round(ui.dp(6f * scale)));
         bodyContainer.addView(wheelTouch, wheelLp);
 
         // Center Middle ("=") button hit area straddling the horizontal seam
         View middleTouch = createMiddleTouchZone();
-        LayoutParams midLp = new LayoutParams(ui.dp(30), ui.dp(26), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        midLp.topMargin = seamY - ui.dp(13);
+        int midTouchW = Math.max(ui.dp(22), Math.round(ui.dp(30f * scale)));
+        int midTouchH = Math.max(ui.dp(18), Math.round(ui.dp(26f * scale)));
+        LayoutParams midLp = new LayoutParams(midTouchW, midTouchH, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        midLp.topMargin = seamY - midTouchH / 2;
         bodyContainer.addView(middleTouch, midLp);
 
         LayoutParams bodyLp = new LayoutParams(bodyW, bodyH, Gravity.TOP | Gravity.LEFT);
@@ -176,26 +206,27 @@ final class VirtualMouseBar extends FrameLayout {
 
         // Exterior circular close ("x") button cleanly outside the right shoulder (zero overlap with Right-Click)
         FrameLayout collapseBtn = new FrameLayout(ui.context);
-        GradientDrawable closeBg = ui.background(0xC622252D, 12);
+        GradientDrawable closeBg = ui.background(0xC622252D, closeBadgeDp / 2);
         closeBg.setStroke(Math.max(1, ui.dp(0.9f)), 0x45FFFFFF);
         collapseBtn.setBackground(closeBg);
         collapseBtn.setElevation(ui.dp(10));
         collapseBtn.setContentDescription(L10n.tr("收起虚拟鼠标"));
         collapseBtn.setClickable(true);
         collapseBtn.setFocusable(false);
+        int closeIconPx = Math.max(ui.dp(9), Math.round(ui.dp(closeBadgeDp * 0.5f)));
         collapseBtn.addView(ui.icon("close", 0xFFF2F4F8),
-                new LayoutParams(ui.dp(12), ui.dp(12), Gravity.CENTER));
+                new LayoutParams(closeIconPx, closeIconPx, Gravity.CENTER));
         collapseBtn.setOnClickListener(v -> {
             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             cancelInput();
             setExpanded(false);
         });
-        LayoutParams closeLp = new LayoutParams(ui.dp(CLOSE_BADGE_DP), ui.dp(CLOSE_BADGE_DP), Gravity.TOP | Gravity.LEFT);
-        closeLp.leftMargin = bodyW + ui.dp(4);
-        closeLp.topMargin = ui.dp(6);
+        LayoutParams closeLp = new LayoutParams(ui.dp(closeBadgeDp), ui.dp(closeBadgeDp), Gravity.TOP | Gravity.LEFT);
+        closeLp.leftMargin = bodyW + ui.dp(closeGapDp);
+        closeLp.topMargin = Math.max(ui.dp(3), Math.round(ui.dp(6f * scale)));
         expandedShell.addView(collapseBtn, closeLp);
 
-        addView(expandedShell, new LayoutParams(ui.dp(EXPANDED_WIDTH_DP), ui.dp(EXPANDED_HEIGHT_DP)));
+        addView(expandedShell, new LayoutParams(ui.dp(expandedWidthDp), ui.dp(expandedHeightDp)));
 
         input.addCancelListener(this::resetTouches);
         setContentDescription(L10n.tr("虚拟鼠标"));
@@ -209,9 +240,13 @@ final class VirtualMouseBar extends FrameLayout {
 
     boolean isStationaryButtonHold() { return activeStationaryButtons > 0; }
 
-    int currentWidthDp() { return expanded ? EXPANDED_WIDTH_DP : COLLAPSED_SIZE_DP; }
+    int currentWidthDp() { return expanded ? expandedWidthDp : collapsedSizeDp; }
 
-    int currentHeightDp() { return expanded ? EXPANDED_HEIGHT_DP : COLLAPSED_SIZE_DP; }
+    int currentHeightDp() { return expanded ? expandedHeightDp : collapsedSizeDp; }
+
+    float coupledOffsetXDp() { return coupledOffsetXDp; }
+
+    float coupledOffsetYDp() { return COUPLED_OFFSET_Y_DP; }
 
     void setExpanded(boolean value) {
         if (expanded == value) return;
@@ -779,12 +814,15 @@ final class VirtualMouseBar extends FrameLayout {
             float h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float stroke = 1.9f * density;
-            float inset = stroke * 0.5f + 0.5f * density;
+            float s = w / Math.max(1f, 98f * density);
+            float u = density * s;
+            float stroke = Math.max(1.2f * density, 1.9f * u);
+            float seamStroke = Math.max(1.0f * density, 1.45f * u);
+            float inset = stroke * 0.5f + 0.5f * u;
             bodyRect.set(inset, inset, w - inset, h - inset);
 
-            float rTop = 37f * density;
-            float rBot = 40f * density;
+            float rTop = 37f * u;
+            float rBot = 40f * u;
             float[] radii = {rTop, rTop, rTop, rTop, rBot, rBot, rBot, rBot};
             bodyPath.reset();
             bodyPath.addRoundRect(bodyRect, radii, Path.Direction.CW);
@@ -831,7 +869,7 @@ final class VirtualMouseBar extends FrameLayout {
             int seamSave = canvas.save();
             canvas.clipPath(bodyPath);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.45f * density);
+            paint.setStrokeWidth(seamStroke);
             paint.setColor(0xFF9AA3B3);
             canvas.drawLine(bodyRect.left, seamY, bodyRect.right, seamY, paint);
             canvas.drawLine(cx, bodyRect.top, cx, seamY, paint);
@@ -843,10 +881,10 @@ final class VirtualMouseBar extends FrameLayout {
             paint.setColor(0xFF7B8596);
             canvas.drawPath(bodyPath, paint);
 
-            // 5. Center Scroll Wheel stadium pill (20 x 36 dp)
-            float wheelW = 20f * density;
-            float wheelH = 36f * density;
-            float wheelTop = 9.0f * density;
+            // 5. Center Scroll Wheel stadium pill (scaled proportionally)
+            float wheelW = 20f * u;
+            float wheelH = 36f * u;
+            float wheelTop = 9.0f * u;
             wheelRect.set(cx - wheelW * 0.5f, wheelTop, cx + wheelW * 0.5f, wheelTop + wheelH);
             float wheelR = wheelW * 0.5f;
 
@@ -855,16 +893,16 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawRoundRect(wheelRect, wheelR, wheelR, paint);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.45f * density);
+            paint.setStrokeWidth(seamStroke);
             paint.setColor(wheelActive ? MobileUi.BLUE : 0xFF8891A2);
             canvas.drawRoundRect(wheelRect, wheelR, wheelR, paint);
 
             // Solid upward & downward triangles + center pivot dot inside wheel
             paint.setStyle(Paint.Style.FILL);
-            float triHalfW = 3.0f * density;
-            float triH = 3.8f * density;
+            float triHalfW = 3.0f * u;
+            float triH = 3.8f * u;
 
-            float upTipY = wheelRect.top + 6.4f * density;
+            float upTipY = wheelRect.top + 6.4f * u;
             paint.setColor(wheelActive && wheelDir > 0 ? MobileUi.BLUE : 0xFF768092);
             triPath.reset();
             triPath.moveTo(cx, upTipY);
@@ -874,9 +912,9 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawPath(triPath, paint);
 
             paint.setColor(0xFF9AA3B3);
-            canvas.drawCircle(cx, wheelRect.centerY(), 1.35f * density, paint);
+            canvas.drawCircle(cx, wheelRect.centerY(), Math.max(0.9f * density, 1.35f * u), paint);
 
-            float downTipY = wheelRect.bottom - 6.4f * density;
+            float downTipY = wheelRect.bottom - 6.4f * u;
             paint.setColor(wheelActive && wheelDir < 0 ? MobileUi.BLUE : 0xFF768092);
             triPath.reset();
             triPath.moveTo(cx, downTipY);
@@ -886,26 +924,26 @@ final class VirtualMouseBar extends FrameLayout {
             canvas.drawPath(triPath, paint);
 
             // 6. Center Middle ("=") pill straddling the horizontal seam
-            float midW = 20f * density;
-            float midH = 21f * density;
+            float midW = 20f * u;
+            float midH = 21f * u;
             midRect.set(cx - midW * 0.5f, seamY - midH * 0.5f, cx + midW * 0.5f, seamY + midH * 0.5f);
-            float midR = 7.5f * density;
+            float midR = 7.5f * u;
 
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(middlePressed ? MobileUi.BLUE : 0xFFF4F7FD);
             canvas.drawRoundRect(midRect, midR, midR, paint);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.45f * density);
+            paint.setStrokeWidth(seamStroke);
             paint.setColor(middlePressed ? 0xFF1F61C7 : 0xFF8891A2);
             canvas.drawRoundRect(midRect, midR, midR, paint);
 
             // Dual parallel "=" strokes
             paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeWidth(1.65f * density);
+            paint.setStrokeWidth(Math.max(1.1f * density, 1.65f * u));
             paint.setColor(middlePressed ? Color.WHITE : 0xFF768092);
-            float eqHalfW = 3.5f * density;
-            float eqGap = 1.9f * density;
+            float eqHalfW = 3.5f * u;
+            float eqGap = 1.9f * u;
             canvas.drawLine(cx - eqHalfW, seamY - eqGap, cx + eqHalfW, seamY - eqGap, paint);
             canvas.drawLine(cx - eqHalfW, seamY + eqGap, cx + eqHalfW, seamY + eqGap, paint);
         }
