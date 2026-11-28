@@ -186,9 +186,7 @@ int SessionDeviceManager::InitializeScreenCapturer() {
   last_frame_time_ = {};
   next_frame_deadline_ = {};
   ResetCaptureMetrics();
-  // Keep the shared source ready for either live rate. MiniRTC admits 30/60
-  // frames independently per viewer, so switching never restarts native
-  // capture.
+  // Start at the legacy rate until the viewers publish their frame rates.
   const int fps = 60;
   LOG_INFO("Init screen capturer with {} fps", fps);
   SetDisplayInfoList({});
@@ -889,6 +887,8 @@ void SessionDeviceManager::UpdateInteractions() {
   capture_needed = capture_needed || (owner_.screen_capturer_is_started_ &&
       static_cast<ScreenCapturerLinux*>(screen_capturer_)->UsesWaylandPortal());
 #endif
+  if (screen_capturer_ && capture_needed)
+    screen_capturer_->SetCaptureFrameRate(owner_.preview_subscriptions_.CaptureFrameRate(controllers));
   if (capture_needed && !owner_.screen_capturer_is_started_) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_capture_start_retry_ &&

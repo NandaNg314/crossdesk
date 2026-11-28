@@ -4,11 +4,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "capture_frame_pacer.h"
 #include "captured_cursor_state.h"
-#include "capture_resolution.h"
 #include "cursor_frame_compositor.h"
 #include "display_label.h"
 #include "dxgi_cursor_state.h"
@@ -41,17 +42,20 @@ struct ScreenCapturerDxgi::FrameCursor {
   bool already_embedded = false;
 
   FrameCursor() = default;
-  FrameCursor(const DisplayInfo& display, bool show_cursor) {
+  FrameCursor(const DisplayInfo& display, bool show_cursor,
+              std::optional<bool> embedded_in_texture = std::nullopt)
+      : already_embedded(embedded_in_texture.value_or(false)) {
     if (!GetCursorInfo(&info) || !(info.flags & CURSOR_SHOWING)) return;
-    const bool separate =
+    const bool separate = embedded_in_texture ? !*embedded_in_texture :
         SharedDxgiCursorState().ShouldDrawCursor(true, display.handle);
     const RECT bounds{display.left, display.top, display.right, display.bottom};
     draw = show_cursor && separate &&
            (PtInRect(&bounds, info.ptScreenPos) ||
             CursorIntersectsCapture(info, display.left, display.top, display.width,
                                     display.height));
-    already_embedded = !separate &&
-        MonitorFromPoint(info.ptScreenPos, MONITOR_DEFAULTTONULL) == display.handle;
+    if (!embedded_in_texture)
+      already_embedded = !separate &&
+          MonitorFromPoint(info.ptScreenPos, MONITOR_DEFAULTTONULL) == display.handle;
   }
 
   bool SameImageAs(const FrameCursor& other) const {
@@ -62,7 +66,8 @@ struct ScreenCapturerDxgi::FrameCursor {
   }
 };
 
-ScreenCapturerDxgi::ScreenCapturerDxgi() {}
+ScreenCapturerDxgi::ScreenCapturerDxgi(const std::atomic<int>* live_frame_rate)
+    : live_frame_rate_(live_frame_rate) {}
 ScreenCapturerDxgi::~ScreenCapturerDxgi() {
   Destroy();
 }
@@ -103,8 +108,6 @@ int ScreenCapturerDxgi::Destroy() {
     nv12_width_ = 0;
     nv12_height_ = 0;
   }
-  rotated_frame_.clear();
-  scaled_frame_.clear();
   return 0;
 }
 
@@ -133,7 +136,10 @@ int ScreenCapturerDxgi::Stop() {
 }
 
 int ScreenCapturerDxgi::Pause(int monitor_index) {
+  std::lock_guard lock(switch_mutex_);
   paused_ = true;
+  pending_readbacks_ = 0;
+  ++duplication_generation_;
   return 0;
 }
 
@@ -313,19 +319,25 @@ bool ScreenCapturerDxgi::CreateDuplicationForMonitor(int monitor_index) {
     return false;
   }
 
-  staging_.Reset();
   DXGI_OUTDUPL_DESC desc{};
   duplication_->GetDesc(&desc);
   rotation_ = desc.Rotation;
-#if USE_CUDA
-  if (rotation_ == DXGI_MODE_ROTATION_IDENTITY || rotation_ == DXGI_MODE_ROTATION_UNSPECIFIED) {
-    DXGI_ADAPTER_DESC adapter{};
-    if (SUCCEEDED(output_adapter->GetDesc(&adapter)) && adapter.VendorId == 0x10DE)
-      gpu_frames_ = std::make_unique<DxgiNv12Frames>(d3d_device_.Get());
-  }
-#endif
   DXGI_ADAPTER_DESC adapter_desc{};
   output_adapter->GetDesc(&adapter_desc);
+  if (rotation_ == DXGI_MODE_ROTATION_IDENTITY || rotation_ == DXGI_MODE_ROTATION_UNSPECIFIED) {
+    if (adapter_desc.VendorId == 0x8086) {
+      auto demand = Microsoft::WRL::Make<IntelCaptureDemand>();
+      if (demand && SUCCEEDED(d3d_device_->SetPrivateDataInterface(
+              __uuidof(minirtc::D3D11CaptureFeedback), demand.Get()))) {
+        intel_demand_ = std::move(demand);
+        gpu_frames_ = std::make_unique<DxgiNv12Frames>(d3d_device_.Get());
+      }
+    }
+#if USE_CUDA
+    if (adapter_desc.VendorId == 0x10DE)
+      gpu_frames_ = std::make_unique<DxgiNv12Frames>(d3d_device_.Get());
+#endif
+  }
   DXGI_OUTPUT_DESC output_desc{};
   software_cursor_output_ =
       SUCCEEDED(outputs_[monitor_index]->GetDesc(&output_desc)) &&
@@ -351,7 +363,9 @@ void ScreenCapturerDxgi::ReleaseDuplication() {
   gpu_frames_.reset();
   hdr_tone_mapper_.Reset();
   hdr_info_ = {};
-  staging_.Reset();
+  intel_demand_.Reset();
+  readback_ = {};
+  read_slot_ = pending_readbacks_ = 0;
   ReleaseAcquiredFrame();
   duplication_.Reset();
 }
@@ -366,35 +380,43 @@ HRESULT ScreenCapturerDxgi::ReleaseAcquiredFrame() {
   return result;
 }
 
-bool ScreenCapturerDxgi::StageTexture(ID3D11Texture2D* texture) {
-  D3D11_TEXTURE2D_DESC desc{}, existing{};
+bool ScreenCapturerDxgi::QueueReadback(ID3D11Texture2D* texture, bool cursor_embedded) {
+  D3D11_TEXTURE2D_DESC desc{};
   texture->GetDesc(&desc);
-  if (staging_) staging_->GetDesc(&existing);
-  if (!staging_ || existing.Width != desc.Width || existing.Height != desc.Height ||
-      existing.Format != desc.Format) {
-    staging_.Reset();
+  const auto matches = [&](ID3D11Texture2D* target) {
+    D3D11_TEXTURE2D_DESC existing{};
+    if (target) target->GetDesc(&existing);
+    return target && existing.Width == desc.Width && existing.Height == desc.Height &&
+           existing.Format == desc.Format;
+  };
+  if (pending_readbacks_ && !matches(readback_[read_slot_].texture.Get()))
+    pending_readbacks_ = 0;
+  // Preserve the oldest pending copy until it can be mapped. If the GPU is
+  // late, coalesce newer presents in the other slot, including the final one.
+  auto& slot = readback_[pending_readbacks_ ? 1 - read_slot_ : read_slot_];
+  if (!matches(slot.texture.Get())) {
+    slot.texture.Reset();
     desc.Usage = D3D11_USAGE_STAGING;
     desc.BindFlags = desc.MiscFlags = 0;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (FAILED(d3d_device_->CreateTexture2D(&desc, nullptr, &staging_))) return false;
+    if (FAILED(d3d_device_->CreateTexture2D(&desc, nullptr, &slot.texture))) return false;
   }
-  d3d_context_->CopyResource(staging_.Get(), texture);
+  d3d_context_->CopyResource(slot.texture.Get(), texture);
+  slot.cursor_embedded = cursor_embedded;
+  pending_readbacks_ = pending_readbacks_ ? 2 : 1;
   return true;
 }
 
-bool ScreenCapturerDxgi::ConvertFrame(int frame_monitor, const FrameCursor& cursor,
-                                      bool* cursor_embedded,
-                                      CursorFrameCompositor& compositor) {
+HRESULT ScreenCapturerDxgi::ConvertFrame(ID3D11Texture2D* staging, int frame_monitor,
+                                         const FrameCursor& cursor, bool* cursor_embedded,
+                                         CursorFrameCompositor& compositor) {
   *cursor_embedded = false;
-  if (!staging_) return false;
   D3D11_TEXTURE2D_DESC src_desc{};
-  staging_->GetDesc(&src_desc);
+  staging->GetDesc(&src_desc);
   D3D11_MAPPED_SUBRESOURCE mapped{};
   const HRESULT hr =
-      d3d_context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-  if (FAILED(hr)) {
-    return false;
-  }
+      d3d_context_->Map(staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+  if (FAILED(hr)) return hr;
 
   auto pixels = static_cast<const uint8_t*>(mapped.pData);
   int stride = static_cast<int>(mapped.RowPitch);
@@ -422,8 +444,8 @@ bool ScreenCapturerDxgi::ConvertFrame(int frame_monitor, const FrameCursor& curs
     if (libyuv::ARGBRotate(pixels, stride, rotated_frame_.data(),
                            rotated_width * 4, logical_width, logical_height,
                            rotation) != 0) {
-      d3d_context_->Unmap(staging_.Get(), 0);
-      return false;
+      d3d_context_->Unmap(staging, 0);
+      return E_FAIL;
     }
     pixels = rotated_frame_.data();
     stride = rotated_width * 4;
@@ -431,14 +453,11 @@ bool ScreenCapturerDxgi::ConvertFrame(int frame_monitor, const FrameCursor& curs
   }
   int even_width = logical_width & ~1;
   int even_height = logical_height & ~1;
-  const auto target = ClampCaptureResolution(even_width, even_height);
-  if (!target.valid()) {
-    d3d_context_->Unmap(staging_.Get(), 0);
-    return false;
+  if (even_width <= 0 || even_height <= 0) {
+    d3d_context_->Unmap(staging, 0);
+    return E_INVALIDARG;
   }
 
-  // Composite the cursor in desktop coordinates before any resolution clamp so
-  // the embedded pointer matches normalized viewer input on oversized monitors.
   *cursor_embedded = cursor.already_embedded;
   if (cursor.draw) {
     const auto& display = display_info_list_[frame_monitor];
@@ -451,46 +470,30 @@ bool ScreenCapturerDxgi::ConvertFrame(int frame_monitor, const FrameCursor& curs
     }
   }
 
-  bool staging_mapped = true;
-  if (target.width != even_width || target.height != even_height) {
-    scaled_frame_.resize(static_cast<size_t>(target.width) * target.height * 4);
-    const int scaled = libyuv::ARGBScale(
-        pixels, stride, even_width, even_height, scaled_frame_.data(),
-        target.width * 4, target.width, target.height, libyuv::kFilterBox);
-    d3d_context_->Unmap(staging_.Get(), 0);
-    staging_mapped = false;
-    if (scaled != 0) {
-      return false;
-    }
-    pixels = scaled_frame_.data();
-    stride = target.width * 4;
-  }
-
-  const size_t luma_size = static_cast<size_t>(target.width) * target.height;
-  const size_t nv12_size = luma_size + luma_size / 2;
-  if (!nv12_frame_ || nv12_width_ != target.width ||
-      nv12_height_ != target.height) {
+  int nv12_size = even_width * even_height * 3 / 2;
+  if (!nv12_frame_ || nv12_width_ != even_width ||
+      nv12_height_ != even_height) {
     delete[] nv12_frame_;
     nv12_frame_ = new unsigned char[nv12_size];
-    nv12_width_ = target.width;
-    nv12_height_ = target.height;
+    nv12_width_ = even_width;
+    nv12_height_ = even_height;
   }
 
   const int converted =
-      libyuv::ARGBToNV12(pixels, stride, nv12_frame_, target.width,
-                         nv12_frame_ + luma_size, target.width,
-                         target.width, target.height);
+      libyuv::ARGBToNV12(pixels, stride, nv12_frame_, even_width,
+                         nv12_frame_ + even_width * even_height, even_width,
+                         even_width, even_height);
 
-  if (staging_mapped) {
-    d3d_context_->Unmap(staging_.Get(), 0);
-  }
-  return converted == 0;
+  d3d_context_->Unmap(staging, 0);
+  return converted == 0 ? S_OK : E_FAIL;
 }
 
 void ScreenCapturerDxgi::CaptureLoop() {
   ScopedWindowsPhysicalCoordinates physical_coordinates;
   CursorFrameCompositor cursor_compositor;
-  const int timeout_ms = (std::max)(1, 1000 / (std::max)(1, fps_));
+  CaptureFramePacer pacer;
+  CaptureFramePacer::Clock::time_point last_sample{};
+  int sample_fps = 0;
   bool cached_frame_valid = false;
   bool cached_cursor_embedded = false;
   FrameCursor cached_cursor;
@@ -516,9 +519,21 @@ void ScreenCapturerDxgi::CaptureLoop() {
     if (paused_) {
       cached_gpu.Reset();
       cached_frame_valid = false;
+      last_sample = {};
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
+
+    const int fps = live_frame_rate_
+        ? live_frame_rate_->load(std::memory_order_relaxed) : fps_;
+    if (fps != sample_fps) {
+      sample_fps = fps;
+      LOG_INFO("DXGI: sampling desktop at {} fps", fps);
+    }
+    // Leave desktop updates pending in DXGI until we can use them. Dropping
+    // an acquired present here could lose the final update after scrolling.
+    if (last_sample != CaptureFramePacer::Clock::time_point{})
+      pacer.Wait(last_sample, fps);
 
     // Duplication/staging textures belong to one monitor. Do not release or
     // replace them in SwitchTo while AcquireNextFrame/Map is using them.
@@ -526,6 +541,7 @@ void ScreenCapturerDxgi::CaptureLoop() {
     if (paused_ || !running_) continue;
     if (cached_generation != duplication_generation_) {
       // A switched or lost output may never deliver another present.
+      cached_generation = duplication_generation_;
       cached_gpu.Reset();
       cached_frame_valid = false;
     }
@@ -567,44 +583,86 @@ void ScreenCapturerDxgi::CaptureLoop() {
     }
 
     const int frame_monitor = monitor_index_.load();
-    const auto read_cursor = [&] {
+    DXGI_OUTDUPL_FRAME_INFO frame_info{};
+    const auto read_cursor = [&](std::optional<bool> embedded = std::nullopt) {
       return FrameCursor(display_info_list_[frame_monitor],
-                         show_cursor_.load(std::memory_order_relaxed));
+                         show_cursor_.load(std::memory_order_relaxed), embedded);
     };
-    const auto deliver_cached = [&](bool pointer_shape_changed) {
-      if (!cached_frame_valid || cached_generation != duplication_generation_ ||
-          cached_monitor != monitor_index_.load() || !callback_)
-        return;
-      const auto cursor = read_cursor();
-      const bool redraw = !cursor.SameImageAs(cached_cursor) ||
-                          (cursor.draw && pointer_shape_changed);
-      const auto delivery_time = std::chrono::steady_clock::now();
-      if (!redraw && delivery_time - last_delivery < kStaticRefreshInterval)
-        return;
-      if (cached_gpu && redraw && cursor.draw) {
-        // Cursor composition must start from the clean BGRA desktop, even on
-        // a pointer-only acquire. The next desktop present can use NV12 again.
-        if (!StageTexture(gpu_frames_->CleanDesktop())) return;
-        cached_gpu.Reset();
-      }
-      if (cached_gpu) cached_cursor_embedded = cursor.already_embedded;
-      // Retry a failed GDI cursor draw on the next refresh.
-      if (!cached_gpu && (redraw || (cursor.draw && !cached_cursor_embedded)) &&
-          !ConvertFrame(cached_monitor, cursor, &cached_cursor_embedded,
-                        cursor_compositor)) {
-        cached_frame_valid = false;
-        return;
+    const auto publish = [&](const FrameCursor& cursor, bool embedded) {
+      if (last_logged_cursor_embedding_ < 0 ||
+          (software_cursor_output_ && last_logged_cursor_embedding_ != static_cast<int>(embedded))) {
+        LOG_DEBUG("DXGI cursor: monitor={} usbmmidd={} mouse_update={} "
+                  "separate_pointer_visible={} pointer_shape_bytes={} "
+                  "compose_cursor={} embedded={}",
+                  frame_monitor, software_cursor_output_, frame_info.LastMouseUpdateTime.QuadPart,
+                  frame_info.PointerPosition.Visible != FALSE, frame_info.PointerShapeBufferSize,
+                  show_cursor_.load(std::memory_order_relaxed), embedded);
+        last_logged_cursor_embedding_ = static_cast<int>(embedded);
       }
       cached_cursor = cursor;
-      last_delivery = delivery_time;
-      const auto stream_id = MakeDisplayStreamId(cached_monitor);
+      cached_cursor_embedded = embedded;
+      cached_monitor = frame_monitor;
+      cached_frame_valid = true;
+      last_delivery = std::chrono::steady_clock::now();
+      const auto stream_id = MakeDisplayStreamId(frame_monitor);
       capture_lock.unlock();
-      deliver(stream_id, cached_cursor_embedded);
+      if (callback_ && running_ && !paused_ && frame_monitor == monitor_index_.load())
+        deliver(stream_id, embedded);
     };
-    DXGI_OUTDUPL_FRAME_INFO frame_info{};
+    const auto drain_readback = [&] {
+      const auto& slot = readback_[read_slot_];
+      const auto cursor = read_cursor(slot.cursor_embedded);
+      bool embedded = false;
+      const HRESULT hr = ConvertFrame(slot.texture.Get(), frame_monitor, cursor,
+                                      &embedded, cursor_compositor);
+      if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+        // An idle desktop may never submit another copy. Submit outstanding
+        // work and retry this same slot at the next tick without blocking.
+        d3d_context_->Flush();
+        return;
+      }
+      read_slot_ = 1 - read_slot_;
+      --pending_readbacks_;
+      cached_frame_valid = SUCCEEDED(hr);
+      if (cached_frame_valid) publish(cursor, embedded);
+    };
+    const auto deliver_cached = [&](bool pointer_shape_changed) {
+      // Drain before the static refresh gate. A timeout or pointer-only
+      // acquire may be the first opportunity to deliver the last present.
+      if (pending_readbacks_) {
+        drain_readback();
+        return;
+      }
+      if (!cached_frame_valid || cached_monitor != frame_monitor || !callback_) return;
+      const auto& last_read = readback_[1 - read_slot_];
+      const auto cursor = cached_gpu ? read_cursor() : read_cursor(last_read.cursor_embedded);
+      const bool redraw = !cursor.SameImageAs(cached_cursor) ||
+                          (cursor.draw && pointer_shape_changed);
+      if (!redraw && std::chrono::steady_clock::now() - last_delivery < kStaticRefreshInterval)
+        return;
+      if (cached_gpu &&
+          ((redraw && cursor.draw) || (intel_demand_ && intel_demand_->PrefersCpu()))) {
+        if (!QueueReadback(gpu_frames_->CleanDesktop(), cached_cursor.already_embedded)) return;
+        cached_gpu.Reset();
+        cached_frame_valid = false;
+        drain_readback();
+        return;
+      }
+      bool embedded = cached_gpu ? cursor.already_embedded : cached_cursor_embedded;
+      if (!cached_gpu && (redraw || (cursor.draw && !embedded))) {
+        const HRESULT hr = ConvertFrame(last_read.texture.Get(), frame_monitor,
+                                        cursor, &embedded, cursor_compositor);
+        if (FAILED(hr)) {
+          if (hr != DXGI_ERROR_WAS_STILL_DRAWING) cached_frame_valid = false;
+          return;
+        }
+      }
+      publish(cursor, embedded);
+    };
     Microsoft::WRL::ComPtr<IDXGIResource> desktop_resource;
+    last_sample = CaptureFramePacer::Clock::now();
     HRESULT hr = duplication_->AcquireNextFrame(
-        timeout_ms, &frame_info, desktop_resource.GetAddressOf());
+        0, &frame_info, desktop_resource.GetAddressOf());
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
       // DXGI explicitly reports an unchanged desktop. Re-emit only a frame
       // successfully acquired for this monitor to keep delivering static frames.
@@ -650,18 +708,11 @@ void ScreenCapturerDxgi::CaptureLoop() {
       }
       continue;
     }
-    cached_frame_valid = false;
-
     Microsoft::WRL::ComPtr<ID3D11Texture2D> acquired_tex;
-    if (desktop_resource) {
-      hr = desktop_resource->QueryInterface(
-          IID_PPV_ARGS(acquired_tex.GetAddressOf()));
-      if (FAILED(hr)) {
-        ReleaseAcquiredFrame();
-        continue;
-      }
-    } else {
-      ReleaseAcquiredFrame();
+    if (!desktop_resource || FAILED(desktop_resource.As(&acquired_tex))) {
+      pending_readbacks_ = 0;
+      cached_frame_valid = false;
+      if (FAILED(ReleaseAcquiredFrame())) ReleaseDuplication();
       continue;
     }
 
@@ -681,45 +732,28 @@ void ScreenCapturerDxgi::CaptureLoop() {
 
     const auto cursor = read_cursor();
     cached_gpu.Reset();
-    if (!cursor.draw && gpu_frames_) cached_gpu = gpu_frames_->Convert(desktop_tex);
-    bool cursor_embedded = cursor.already_embedded;
-    const bool converted = cached_gpu ||
-        (StageTexture(desktop_tex) &&
-         ConvertFrame(frame_monitor, cursor, &cursor_embedded, cursor_compositor));
-
-    const std::string stream_id = MakeDisplayStreamId(frame_monitor);
-    cached_generation = duplication_generation_;
-    if (converted && frame_monitor == monitor_index_.load() && callback_) {
-      if (last_logged_cursor_embedding_ < 0 ||
-          (software_cursor_output_ &&
-           last_logged_cursor_embedding_ != static_cast<int>(cursor_embedded))) {
-        LOG_DEBUG("DXGI cursor: monitor={} usbmmidd={} mouse_update={} "
-                 "separate_pointer_visible={} pointer_shape_bytes={} "
-                 "compose_cursor={} embedded={}",
-                 frame_monitor, software_cursor_output_,
-                 frame_info.LastMouseUpdateTime.QuadPart,
-                 frame_info.PointerPosition.Visible != FALSE,
-                 frame_info.PointerShapeBufferSize,
-                 show_cursor_.load(std::memory_order_relaxed), cursor_embedded);
-        last_logged_cursor_embedding_ = static_cast<int>(cursor_embedded);
-      }
-    }
-    // A mode/desktop transition can invalidate the acquire during readback.
-    // Do not publish that frame if releasing it reports the lost capture.
+    if (!cursor.draw && gpu_frames_ && (!intel_demand_ || intel_demand_->TryNative()))
+      cached_gpu = gpu_frames_->Convert(desktop_tex);
+    const bool submitted = cached_gpu || QueueReadback(desktop_tex, cursor.already_embedded);
+    acquired_tex.Reset();
+    desktop_resource.Reset();
+    // All GPU reads of the acquired surface have been submitted. Release it
+    // before mapping, converting, or calling back with either staging slot.
     if (FAILED(ReleaseAcquiredFrame())) {
       ReleaseDuplication();
       next_topology_check = std::chrono::steady_clock::now();
       continue;
     }
-    capture_lock.unlock();
-
-    if (converted && frame_monitor == monitor_index_.load() && callback_) {
-      cached_cursor = cursor;
-      last_delivery = std::chrono::steady_clock::now();
-      deliver(stream_id, cursor_embedded);
-      cached_cursor_embedded = cursor_embedded;
-      cached_monitor = frame_monitor;
-      cached_frame_valid = true;
+    if (!submitted) {
+      pending_readbacks_ = 0;
+      cached_frame_valid = false;
+      continue;
+    }
+    if (cached_gpu) {
+      pending_readbacks_ = 0;  // This newer native frame supersedes queued CPU frames.
+      publish(cursor, cursor.already_embedded);
+    } else if (pending_readbacks_ == 2 || !cached_frame_valid) {
+      drain_readback();
     }
   }
 }
